@@ -1,10 +1,12 @@
-# Morphology_Agnostic_Humanoid_Retargeting_via_Perceptual_Aligned_Graph_Similarity
+# Morphology Agnostic Humanoid Retargeting via Perceptual Aligned Graph Similarity
+
+![teaser.png](images/teaser.png)
 
 ## About this project
 
 This project is the official implementation of the paper "Morphology-Agnostic Humanoid 
 Retargeting via Perceptual Aligned Graph Similarity". The project provides a complete 
-pipeline for humanoid motion retargeting. Asf/amc and BVH formats are supported.
+pipeline for humanoid motion retargeting. ASF/AMC and BVH formats are supported.
 
 We provide a few retargeting examples from CMU and AMASS dataset to several robots and 
 convenient extension for adding new robots.
@@ -40,10 +42,10 @@ pip install -r requirements.txt
 
 ### Preparing Mocap Data
 
-Two sources of motion capture data are supported now: CMU dataset in asf/amc format and 
+Two sources of motion capture data are supported now: CMU dataset in ASF/AMC format and 
 AMASS dataset converted to BVH format.
 
-1. **CMU dataset in asf/amc format**: You can acquire this format of data from their 
+1. **CMU dataset in ASF/AMC format**: You can acquire this format of data from their 
    official website
    [CMU Graphics Lab Motion Capture Database](https://mocap.cs.cmu.edu/). You should 
    put the data under  `mocap_data_converter/rsc/all_asfamc/subjects` directory. The 
@@ -114,4 +116,11 @@ json format, which contains the retargeted joint angles and root states.
 
 ### Acknowledgements
 
-TODO
+We would like to thank the following projects for their contributions:
+
+- [urdfpy](https://github.com/mmatl/urdfpy) for loading URDF files and calculating 
+  forward kinematics.
+- [AMCParser](https://github.com/CalciferZh/AMCParser) for parsing CMU Mocap's ASF/AMC 
+  files.
+- [ASE](https://github.com/nv-tlabs/ASE), which we use its poselib component for 
+  intermediate pose representation.
