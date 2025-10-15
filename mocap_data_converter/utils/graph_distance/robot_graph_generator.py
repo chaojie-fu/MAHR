@@ -1,37 +1,99 @@
 import logging
+from typing import Iterable, List, Tuple
 
 import networkx as nx
 import numpy as np
-import sympy
-from urdfpy import URDF
 
 from mocap_data_converter.config.RobotConfig import RobotConfig
 
 
+class RobotGraphCallable:
+    """Callable object that generates robot vector graphs from joint angles."""
+
+    def __init__(
+        self,
+        robot,
+        robot_key_joints: List[str],
+        edge_pairs: List[Tuple[int, int]],
+        edge_norm_lookup: dict[frozenset[str], float],
+        normalize_edge_weights: bool,
+    ):
+        self.robot = robot
+        self.robot_key_joints = robot_key_joints
+        self.edge_pairs = edge_pairs
+        self.edge_norm_lookup = edge_norm_lookup
+        self.normalize_edge_weights = normalize_edge_weights
+
+    def __call__(
+        self,
+        joint_angles: Iterable[float],
+        root_rotation_matrix: np.ndarray,
+        root_height: float
+    ) -> nx.Graph:
+        cfg_dict = {
+            joint_name: float(joint_value)
+            for joint_name, joint_value in zip(self.robot.actuated_joint_names, joint_angles)
+        }
+        fk_current = self.robot.link_fk(cfg=cfg_dict, use_names=True)
+
+        graph = nx.Graph()
+        graph.add_nodes_from(self.robot_key_joints)
+
+        vector_edges_runtime = []
+        for start_idx_, end_idx_ in self.edge_pairs:
+            start_joint = self.robot_key_joints[start_idx_]
+            end_joint = self.robot_key_joints[end_idx_]
+
+            if start_joint == "ground":
+                start_height = 0.0
+                end_height = root_height + float(
+                    root_rotation_matrix[2].dot(fk_current[end_joint][0:3, 3])
+                )
+                pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype=float)
+            elif end_joint == "ground":
+                start_height = root_height + float(
+                    root_rotation_matrix[2].dot(fk_current[start_joint][0:3, 3])
+                )
+                end_height = 0.0
+                pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype=float)
+            else:
+                pos_vector = (
+                    fk_current[end_joint][0:3, 3] -
+                    fk_current[start_joint][0:3, 3]
+                ).astype(float)
+
+            if self.normalize_edge_weights:
+                norm = self.edge_norm_lookup[frozenset((start_joint, end_joint))]
+                if norm > 0.0:
+                    pos_vector = pos_vector / norm
+
+            vector_edges_runtime.append(
+                (start_joint, end_joint, {"position_vector": pos_vector})
+            )
+
+        graph.add_edges_from(vector_edges_runtime)
+        return graph
+
+
 def generate_vector_symbolic_graph_for_robot(
     robot_config: RobotConfig,
-    normalize_edge_weights=False,
-    filter_edges_when_generating_graph=False,
-    edge_filter=None
+    normalize_edge_weights: bool = False,
+    filter_edges_when_generating_graph: bool = False,
+    edge_filter: Iterable[Tuple[int, int]] | None = None
 ):
     logging.getLogger().info("Start generating graphs for robot")
     robot = robot_config.robot
     num_dofs = len(robot.actuated_joints)
-
-    gc_symbols = [sympy.symbols('p%d' % i) for i in range(num_dofs)]
-
-    # naming format: r_row_col
-    root_rot_symbols = [[sympy.symbols(f"r_{row}_{col}") for col in range(3)] for row in range(3)]
-    root_height_symbol = sympy.symbols("h")
-
-    fk = robot.link_fk(cfg=gc_symbols, use_names=True)
 
     gc_lower_bounds = np.asarray(
         [robot.actuated_joints[idx].limit.lower for idx in range(len(robot.actuated_joint_names))])
     gc_upper_bounds = np.asarray(
         [robot.actuated_joints[idx].limit.upper for idx in range(len(robot.actuated_joint_names))])
 
-    t_pose_fk = robot.link_fk(cfg=robot_config.norm_pose_in_rad, use_names=True)
+    t_pose_fk = robot.link_fk(
+        cfg=dict(zip(robot.actuated_joint_names, robot_config.norm_pose_in_rad)),
+        use_names=True
+    )
 
     toes_translations = [t_pose_fk[toe][0:3, 3] for toe in robot_config.toes]
     t_pose_toes_horizontal_distance = np.linalg.norm(toes_translations[0][0:2] - toes_translations[1][0:2], ord=2)
@@ -52,125 +114,48 @@ def generate_vector_symbolic_graph_for_robot(
     # equivalent to toe height of the current t-pose relative to desired on-ground height
     root_elevation = min(toe_heights) * 1.05
 
-    vector_edges = []
     if filter_edges_when_generating_graph:
-        assert edge_filter is not None
-        for start_idx_, end_idx_ in edge_filter:
-            if robot_key_joints[start_idx_] == "ground":
-                start_height = 0.0
-                # end_height = t_pose_fk[robot_key_joints[end_idx_]][2, 3] - root_elevation
-                # use root height for edge normalization connected with ground
-                end_height = t_pose_fk[robot_key_joints[end_idx_]][2, 3] - root_elevation
-                props = {"position_vector": np.asarray([0.0, 0.0, end_height - start_height])}
-            elif robot_key_joints[end_idx_] == "ground":
-                # start_height = t_pose_fk[robot_key_joints[start_idx_]][2, 3] - root_elevation
-                start_height = t_pose_fk[robot_key_joints[start_idx_]][2, 3] - root_elevation
-                end_height = 0.0
-                props = {"position_vector": np.asarray([0.0, 0.0, end_height - start_height])}
-            else:
-                props = {
-                    "position_vector": t_pose_fk[robot_key_joints[end_idx_]][0:3, 3] -
-                                       t_pose_fk[robot_key_joints[start_idx_]][0:3, 3]
-                }
-            vector_edges.append((robot_key_joints[start_idx_], robot_key_joints[end_idx_], props))
+        if edge_filter is None:
+            raise ValueError("`edge_filter` must be provided when filtering edges.")
+        edge_pairs: List[Tuple[int, int]] = [tuple(pair) for pair in edge_filter]
     else:
-        for start_idx_ in range(len(robot_key_joints)):
-            for end_idx_ in range(start_idx_ + 1, len(robot_key_joints)):
-                if robot_key_joints[start_idx_] == "ground":
-                    start_height = 0.0
-                    # end_height = t_pose_fk[robot_key_joints[end_idx_]][2, 3] - root_elevation
-                    end_height = t_pose_fk[robot_key_joints[end_idx_]][2, 3] - root_elevation
-                    props = {"position_vector": np.asarray([0.0, 0.0, end_height - start_height])}
-                elif robot_key_joints[end_idx_] == "ground":
-                    # start_height = t_pose_fk[robot_key_joints[start_idx_]][2, 3] - root_elevation
-                    start_height = t_pose_fk[robot_key_joints[start_idx_]][2, 3] - root_elevation
-                    end_height = 0.0
-                    props = {"position_vector": np.asarray([0.0, 0.0, end_height - start_height])}
-                else:
-                    props = {
-                        "position_vector": t_pose_fk[robot_key_joints[end_idx_]][0:3, 3] -
-                                           t_pose_fk[robot_key_joints[start_idx_]][0:3, 3]
-                    }
-                vector_edges.append((robot_key_joints[start_idx_], robot_key_joints[end_idx_], props))
+        edge_pairs = [
+            (start_idx_, end_idx_)
+            for start_idx_ in range(len(robot_key_joints))
+            for end_idx_ in range(start_idx_ + 1, len(robot_key_joints))
+        ]
+
+    vector_edges = []
+    edge_norm_lookup: dict[frozenset[str], float] = {}
+    for start_idx_, end_idx_ in edge_pairs:
+        start_joint = robot_key_joints[start_idx_]
+        end_joint = robot_key_joints[end_idx_]
+        if start_joint == "ground":
+            start_height = 0.0
+            end_height = t_pose_fk[end_joint][2, 3] - root_elevation
+            pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype=float)
+        elif end_joint == "ground":
+            start_height = t_pose_fk[start_joint][2, 3] - root_elevation
+            end_height = 0.0
+            pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype=float)
+        else:
+            pos_vector = (
+                t_pose_fk[end_joint][0:3, 3] -
+                t_pose_fk[start_joint][0:3, 3]
+            ).astype(float)
+
+        vector_edges.append((start_joint, end_joint, {"position_vector": pos_vector}))
+        edge_norm_lookup[frozenset((start_joint, end_joint))] = float(np.linalg.norm(pos_vector))
+
     t_pose_graph.add_edges_from(vector_edges)
     # ====================================================================================================
 
     # ====================================================================================================
     # robot graph
-    symbolic_graph = nx.Graph()
-    symbolic_graph.add_nodes_from(robot_key_joints)
-
-    vector_edges = []
-    if filter_edges_when_generating_graph:
-        assert edge_filter is not None
-        for start_idx_, end_idx_ in edge_filter:
-            if robot_key_joints[start_idx_] == "ground":
-                start_height = 0.0
-                end_height = root_height_symbol + \
-                             np.dot(
-                                 np.asarray([root_rot_symbols[2][0], root_rot_symbols[2][1], root_rot_symbols[2][2]]),
-                                 fk[robot_key_joints[end_idx_]][0:3, 3]
-                             )
-                pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype="O")
-            elif robot_key_joints[end_idx_] == "ground":
-                start_height = root_height_symbol + \
-                               np.dot(
-                                   np.asarray([root_rot_symbols[2][0], root_rot_symbols[2][1], root_rot_symbols[2][2]]),
-                                   fk[robot_key_joints[start_idx_]][0:3, 3]
-                               )
-                end_height = 0.0
-                pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype="O")
-            else:
-                pos_vector = np.asarray(
-                    fk[robot_key_joints[end_idx_]][0:3, 3] -
-                    fk[robot_key_joints[start_idx_]][0:3, 3], dtype="O")
-
-            if normalize_edge_weights:
-                norm_vec = t_pose_graph.get_edge_data(
-                    robot_key_joints[start_idx_],
-                    robot_key_joints[end_idx_])["position_vector"]
-                pos_vector /= sympy.sqrt(norm_vec[0] ** 2 + norm_vec[1] ** 2 + norm_vec[2] ** 2)
-
-            props = {"position_vector": pos_vector}
-
-            vector_edges.append((robot_key_joints[start_idx_], robot_key_joints[end_idx_], props))
-    else:
-        for start_idx_ in range(len(robot_key_joints)):
-            for end_idx_ in range(start_idx_ + 1, len(robot_key_joints)):
-                if robot_key_joints[start_idx_] == "ground":
-                    start_height = 0.0
-                    end_height = root_height_symbol + \
-                                 np.dot(
-                                     np.asarray([root_rot_symbols[2][0], root_rot_symbols[2][1],
-                                                 root_rot_symbols[2][2]]),
-                                     fk[robot_key_joints[end_idx_]][0:3, 3]
-                                 )
-                    pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype="O")
-                elif robot_key_joints[end_idx_] == "ground":
-                    start_height = root_height_symbol + \
-                                   np.dot(
-                                       np.asarray([root_rot_symbols[2][0], root_rot_symbols[2][1],
-                                                   root_rot_symbols[2][2]]),
-                                       fk[robot_key_joints[start_idx_]][0:3, 3]
-                                   )
-                    end_height = 0.0
-                    pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype="O")
-                else:
-                    pos_vector = np.asarray(
-                        fk[robot_key_joints[end_idx_]][0:3, 3] -
-                        fk[robot_key_joints[start_idx_]][0:3, 3], dtype="O")
-
-                if normalize_edge_weights:
-                    norm_vec = t_pose_graph.get_edge_data(
-                        robot_key_joints[start_idx_],
-                        robot_key_joints[end_idx_])["position_vector"]
-                    pos_vector /= sympy.sqrt(norm_vec[0] ** 2 + norm_vec[1] ** 2 + norm_vec[2] ** 2)
-
-                props = {"position_vector": pos_vector}
-
-                vector_edges.append((robot_key_joints[start_idx_], robot_key_joints[end_idx_], props))
-    symbolic_graph.add_edges_from(vector_edges)
-    # ====================================================================================================
-
-    return (gc_symbols, root_rot_symbols, root_height_symbol), (gc_lower_bounds, gc_upper_bounds), \
-        t_pose_graph, symbolic_graph, t_pose_toes_horizontal_distance
+    return (
+        num_dofs,
+        (gc_lower_bounds, gc_upper_bounds),
+        t_pose_graph,
+        RobotGraphCallable(robot, robot_key_joints, edge_pairs, edge_norm_lookup, normalize_edge_weights),
+        t_pose_toes_horizontal_distance
+    )

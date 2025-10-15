@@ -27,9 +27,7 @@ import matplotlib
 import multiprocessing_logging
 import numpy as np
 import scipy.optimize
-import sympy
 import torch
-from jax import jit
 
 from config.RobotConfig.AgibotX1Config import Agibot_X1_WholeBody_Config
 from config.RobotConfig.FourierGR1Config import Fourier_GR1_WholeBody_Config
@@ -183,27 +181,37 @@ def _cached_motion_config(_cache_dir, _mocap_config, _bvh_motion_file, _norm_pos
 
 
 def _construct_objective_function(
-    mocap_graph_at_frame_idx, mocap_config, robot_symbolic_graph, robot_config,
-    root_quat, root_rot_symbols, gc_symbols, root_height_symbol,
-    flag_weighted_optimization_by_closeness, flag_filter_edges_when_generating_graph, edge_filter
+    mocap_graph_at_frame_idx,
+    mocap_config,
+    robot_graph_fn,
+    robot_config,
+    root_quat,
+    flag_weighted_optimization_by_closeness,
+    flag_filter_edges_when_generating_graph,
+    edge_filter
 ):
     """
-    Construct the JIT-compiled objective function for optimization.
+    Construct the objective function for optimization using a callable robot graph generator.
 
-    :return: JIT-compiled objective function.
+    :return: Objective function mapping decision variables to graph distance.
     """
-    distance = compute_vector_graph_distance(
-        mocap_graph_at_frame_idx, mocap_config.key_bodies,
-        robot_symbolic_graph, robot_config.key_joints,
-        flag_weighted_optimization_by_closeness=flag_weighted_optimization_by_closeness,
-        flag_filter_edges_when_generating_graph=flag_filter_edges_when_generating_graph,
-        edge_filter=edge_filter
-    )
     root_mat = rot_matrix_from_quaternion(torch.from_numpy(root_quat)).numpy()
-    sub_dict = {root_rot_symbols[row][col]: root_mat[row, col] for row in range(3) for col in range(3)}
-    distance_sub = distance.xreplace(sub_dict)
-    f = jit(sympy.lambdify(gc_symbols + [root_height_symbol], distance_sub, "jax"))
-    return f
+
+    def objective(x):
+        gc = x[:-1]
+        root_height = x[-1]
+        robot_graph = robot_graph_fn(gc, root_mat, root_height)
+        return compute_vector_graph_distance(
+            mocap_graph_at_frame_idx,
+            mocap_config.key_bodies,
+            robot_graph,
+            robot_config.key_joints,
+            flag_weighted_optimization_by_closeness=flag_weighted_optimization_by_closeness,
+            flag_filter_edges_when_generating_graph=flag_filter_edges_when_generating_graph,
+            edge_filter=edge_filter
+        )
+
+    return objective
 
 
 def _construct_default_optim_kwargs(
@@ -286,11 +294,13 @@ def optimize_posture_for_vector_graph(
     frame_idx,
     mocap_config: MocapConfig,
     robot_config: RobotConfig,
-    mocap_graph_at_frame_idx, robot_symbolic_graph,
-    mocap_t_pose_graph, robot_t_pose_graph,
+    mocap_graph_at_frame_idx,
+    robot_graph_fn,
+    mocap_t_pose_graph,
+    robot_t_pose_graph,
     root_quat,
-    gc_symbols, root_rot_symbols, root_height_symbol,
-    gc_bounds, x0,
+    gc_bounds,
+    x0,
     trajectory,
     cache_dir,
     flag_weighted_optimization_by_closeness=False,
@@ -305,13 +315,10 @@ def optimize_posture_for_vector_graph(
     :param mocap_config: MocapConfig instance.
     :param robot_config: RobotConfig instance.
     :param mocap_graph_at_frame_idx: Mocap graph at the current frame.
-    :param robot_symbolic_graph: Symbolic robot graph.
+    :param robot_graph_fn: Callable returning the robot graph for provided joint angles.
     :param mocap_t_pose_graph: Mocap T-pose graph.
     :param robot_t_pose_graph: Robot T-pose graph.
     :param root_quat: Root quaternion.
-    :param gc_symbols: Generalized coordinate symbols.
-    :param root_rot_symbols: Root rotation symbols.
-    :param root_height_symbol: Root height symbol.
     :param gc_bounds: Bounds for generalized coordinates.
     :param x0: Initial guess for optimization.
     :param trajectory: Dictionary to store optimized trajectory.
@@ -339,9 +346,14 @@ def optimize_posture_for_vector_graph(
 
         # Construct the objective function
         f = _construct_objective_function(
-            mocap_graph_at_frame_idx, mocap_config, robot_symbolic_graph, robot_config,
-            root_quat, root_rot_symbols, gc_symbols, root_height_symbol,
-            flag_weighted_optimization_by_closeness, flag_filter_edges_when_generating_graph, edge_filter
+            mocap_graph_at_frame_idx,
+            mocap_config,
+            robot_graph_fn,
+            robot_config,
+            root_quat,
+            flag_weighted_optimization_by_closeness,
+            flag_filter_edges_when_generating_graph,
+            edge_filter
         )
 
         obj_construct_time_end = time.time()
@@ -351,7 +363,7 @@ def optimize_posture_for_vector_graph(
 
         # Define the optimization basis function
         def optimize_basis(x):
-            return f(*x) + 1e-3 * np.sum(np.square(np.clip(x, -0.78, 0.78)))
+            return f(x) + 1e-3 * np.sum(np.square(np.clip(x, -0.78, 0.78)))
 
         # Run optimization
         optim_start_time = time.time()
@@ -398,44 +410,6 @@ def optimize_posture_for_vector_graph(
     trajectory["root_height"][frame_idx] = float(x0[-1])
 
     return x0
-
-
-# lambda function can't be pickled easily, which is required for multiprocessing
-# To avoid this problem, use symbols and expression as input,
-# and construct lambda function within the process
-def optimization_wrapper(job_idx, symbols, expression, x0, shared_list, bounds=None):
-    """
-    Wrapper for optimization to be used with multiprocessing.
-
-    :param job_idx: Index of the optimization job.
-    :param symbols: Tuple of symbols for the optimization.
-    :param expression: Sympy expression for the objective.
-    :param x0: Initial guess.
-    :param shared_list: Shared list to store results.
-    :param bounds: Bounds for optimization.
-    :return: None
-    """
-    logging.getLogger().debug(f"Optimizing job No. {job_idx}")
-
-    root_mat = np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-    height = 0.0
-    sub_list = []
-    sub_dict = {}
-    for row in range(3):
-        for col in range(3):
-            sub_list.append((symbols[1][row][col], root_mat[row, col]))
-            sub_dict[symbols[1][row][col]] = root_mat[row, col]
-    sub_list.append((symbols[2], height))
-    # distance_sub = expression.subs(sub_list)
-    distance_sub = expression.xreplace(sub_dict)
-
-    func = sympy.lambdify(symbols[0], distance_sub, "numpy")
-
-    def optimize_basis(x):
-        return func(*x)
-
-    res = scipy.optimize.minimize(optimize_basis, x0, bounds=bounds)
-    shared_list.append((x0, res))
 
 
 # =========================
@@ -493,8 +467,8 @@ def motion_retarget_graph_distance(
 
     # ====================================================================================================
     # construct normalized graph for robot and optimize it
-    (gc_symbols, root_rot_symbols,
-     root_height_symbol), gc_bounds, robot_t_pose_graph, robot_symbolic_graph, robot_t_pose_toes_horizontal_distance = (
+    (_, gc_bounds, robot_t_pose_graph, robot_graph_fn,
+     robot_t_pose_toes_horizontal_distance) = (
         generate_vector_symbolic_graph_for_robot(
             robot_config,
             normalize_edge_weights=flag_normalize_edge_weights_using_T_pose,
@@ -565,13 +539,12 @@ def motion_retarget_graph_distance(
                          simplified_mocap_config,
                          robot_config,
                          mocap_graphs[frame_idx],
-                         robot_symbolic_graph,
-                         t_pose_graph,
-                         robot_t_pose_graph,
-                         motion_global_dict["global_rotations"][frame_idx][0],
-                         gc_symbols, root_rot_symbols, root_height_symbol,
-                         gc_bounds,
-                         x0,
+                        robot_graph_fn,
+                        t_pose_graph,
+                        robot_t_pose_graph,
+                        motion_global_dict["global_rotations"][frame_idx][0],
+                        gc_bounds,
+                        x0,
                          shared_trajectory,
                          optimized_dir,),
                         {"flag_weighted_optimization_by_closeness": flag_weighted_optimization_by_closeness,
@@ -601,11 +574,10 @@ def motion_retarget_graph_distance(
                 simplified_mocap_config,
                 robot_config,
                 mocap_graphs[frame_idx],
-                robot_symbolic_graph,
+                robot_graph_fn,
                 t_pose_graph,
                 robot_t_pose_graph,
                 motion_global_dict["global_rotations"][frame_idx][0],
-                gc_symbols, root_rot_symbols, root_height_symbol,
                 gc_bounds,
                 x0,
                 trajectory,
