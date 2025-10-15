@@ -3,7 +3,7 @@
 
 
   <mujoco>
-    <compiler meshdir="../meshes_unplugged" discardvisual="false" />
+    <compiler meshdir="../meshes_unplugged" discardvisual="false" balanceinertia="true"  fusestatic="false"/>
   </mujoco>
 
   <link name="head">

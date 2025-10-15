@@ -40,6 +40,26 @@ cd ${ProjectDir}
 pip install -r requirements.txt
 ```
 
+#### 3. (Optional) Enable MuJoCo-based forward kinematics
+
+To accelerate numeric forward-kinematics evaluations you can optionally install
+[MuJoCo](https://github.com/google-deepmind/mujoco):
+
+```bash
+pip install mujoco
+```
+
+Set the environment variable before running the retargeting scripts to switch
+the forward-kinematics backend from `urdfpy` to MuJoCo:
+
+```bash
+export MAHR_FK_BACKEND=mujoco
+```
+
+Alternatively, pass `fk_backend="mujoco"` when instantiating the robot config
+classes (e.g. `Fourier_GR1_WholeBody_Config(fk_backend="mujoco")`). When the
+variable is unset the original `urdfpy` implementation is used.
+
 ### Preparing Mocap Data
 
 Two sources of motion capture data are supported now: CMU dataset in ASF/AMC format and 
@@ -118,9 +138,11 @@ json format, which contains the retargeted joint angles and root states.
 
 We would like to thank the following projects for their contributions:
 
-- [urdfpy](https://github.com/mmatl/urdfpy) for loading URDF files and calculating 
+- [urdfpy](https://github.com/mmatl/urdfpy) for loading URDF files and calculating
   forward kinematics.
-- [AMCParser](https://github.com/CalciferZh/AMCParser) for parsing CMU Mocap's ASF/AMC 
+- [MuJoCo](https://github.com/google-deepmind/mujoco) for fast numeric forward
+  kinematics.
+- [AMCParser](https://github.com/CalciferZh/AMCParser) for parsing CMU Mocap's ASF/AMC
   files.
 - [ASE](https://github.com/nv-tlabs/ASE), which we use its poselib component for 
   intermediate pose representation.

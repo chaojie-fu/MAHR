@@ -12,7 +12,7 @@ def compute_vector_graph_distance(
     flag_filter_edges_when_generating_graph=False,
     edge_filter=None
 ):
-    logging.getLogger().info("Start computing symbolic graphs distance expression")
+    # logging.getLogger().info("Start computing symbolic graphs distance expression")
     mocap_edge_pos_vecs = []
     robot_edge_pos_vecs = []
     if flag_filter_edges_when_generating_graph:
@@ -66,7 +66,7 @@ def compute_vector_graph_distance_v2(
     flag_filter_edges_when_generating_graph=False,
     edge_filter=None
 ):
-    logging.getLogger().info("Start computing symbolic graphs distance expression")
+    # logging.getLogger().info("Start computing symbolic graphs distance expression")
     mocap_edge_pos_vecs = []
     mocap_norm_edge_pos_vecs = []
     robot_edge_pos_vecs = []

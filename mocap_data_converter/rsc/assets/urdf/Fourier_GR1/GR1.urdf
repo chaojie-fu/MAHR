@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <robot name="GR1">
-
+   <mujoco>
+    <compiler balanceinertia="true"  fusestatic="false"/>
+  </mujoco>
   <link name="pelvis">
     <inertial>
       <origin xyz="-0.057791 0 -0.048345" rpy="0 0 0"/>

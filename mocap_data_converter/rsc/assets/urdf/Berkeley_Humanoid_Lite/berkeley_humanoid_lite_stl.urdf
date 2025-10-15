@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='utf-8'?>
 <robot name="berkeley-humanoid-lite">
   <mujoco>
-    <compiler meshdir="assets/merged" discardvisual="false" />
+    <compiler meshdir="assets/merged" discardvisual="false" balanceinertia="true"  fusestatic="false"/>
   </mujoco>
-  
+
   <link name="base">
     <inertial>
       <origin xyz="-0.0030965 0.000264765 0.675059" rpy="0 0 0" />

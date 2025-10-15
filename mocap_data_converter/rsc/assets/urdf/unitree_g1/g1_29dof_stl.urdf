@@ -8,7 +8,7 @@
   </material>
 
   <mujoco>
-    <compiler meshdir="meshes" discardvisual="false" />
+    <compiler meshdir="meshes" discardvisual="false" balanceinertia="true"  fusestatic="false"/>
   </mujoco>
 
   

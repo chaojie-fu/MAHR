@@ -1,15 +1,15 @@
 import pathlib
+from typing import Optional
 
 from mocap_data_converter.config import unitree_g1_urdf
 from mocap_data_converter.config.RobotConfig import RobotConfig
-from urdfpy import URDF
 
 
 class Unitree_G1_WholeBody_Config(RobotConfig):
-    def __init__(self, norm_pose_type="stand"):
-        super().__init__()
+    def __init__(self, norm_pose_type="stand", fk_backend: Optional[str] = None):
+        super().__init__(fk_backend=fk_backend)
         self.name = pathlib.Path(unitree_g1_urdf).stem
-        self.robot = URDF.load(unitree_g1_urdf)
+        self.set_robot_model(unitree_g1_urdf)
         self.key_joints = [
             "pelvis_marker",
             "left_knee_marker", "left_ankle_marker", "left_toe_marker",

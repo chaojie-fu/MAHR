@@ -1,15 +1,15 @@
 import pathlib
+from typing import Optional
 
 from mocap_data_converter.config import icub_urdf
 from mocap_data_converter.config.RobotConfig import RobotConfig
-from urdfpy import URDF
 
 
 class iCub_WholeBody_Config(RobotConfig):
-    def __init__(self, norm_pose_type="stand"):
-        super().__init__()
+    def __init__(self, norm_pose_type="stand", fk_backend: Optional[str] = None):
+        super().__init__(fk_backend=fk_backend)
         self.name = pathlib.Path(icub_urdf).stem
-        self.robot = URDF.load(icub_urdf)
+        self.set_robot_model(icub_urdf)
         self.key_joints = [
             "pelvis_marker",
             "left_knee_marker", "left_ankle_marker", "left_toe_marker",
