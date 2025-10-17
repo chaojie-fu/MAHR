@@ -1,5 +1,5 @@
 from typing import Optional, Dict
-from mocap_data_converter.unified_representation import UnifiedRepresentation
+from mahr.unified_representation import UnifiedRepresentation
 
 
 class MocapConfig:

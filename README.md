@@ -68,11 +68,11 @@ AMASS dataset converted to BVH format.
 1. **CMU dataset in ASF/AMC format**: You can acquire this format of data from their 
    official website
    [CMU Graphics Lab Motion Capture Database](https://mocap.cs.cmu.edu/). You should 
-   put the data under  `mocap_data_converter/rsc/all_asfamc/subjects` directory. The 
+   put the data under  `mahr/rsc/all_asfamc/subjects` directory. The 
    data should follow the directory structure like this:
 
    ```
-   mocap_data_converter/rsc/all_asfamc/subjects/
+   mahr/rsc/all_asfamc/subjects/
    ├── 01
    │   ├── 01.asf
    │   ├── 01_01.amc
@@ -85,7 +85,7 @@ AMASS dataset converted to BVH format.
    ```
    
    We provide an index file containing all the subjects in the CMU dataset under 
-   directory `mocap_data_converter/rsc/all_asfamc/index.json`, which will be used for 
+   directory `mahr/rsc/all_asfamc/index.json`, which will be used for 
    retargeting this dataset to robots.
 
 2. **AMASS dataset**: Original motion data is in `npz`, which is available at 
@@ -93,14 +93,14 @@ AMASS dataset converted to BVH format.
    You can convert the data to BVH format with 
    [CharacterAnimationTools](https://github.com/KosukeFukazawa/CharacterAnimationTools).
    You need to put the converted BVH files under directory 
-   `mocap_data_converter/rsc/amass_bvh`.
+   `mahr/rsc/amass_bvh`.
 
 We provided a few examples for both formats in the above directories.
 
 ### Robot Models
 
 We provide a few robot models in URDF format under directory 
-`mocap_data_converter/rsc/assets/urdf`. We modified the original URDF files to
+`mahr/rsc/assets/urdf`. We modified the original URDF files to
 make them compatible with our retargeting algorithm. Basically, we added some "marker" 
 links and joints to the URDF files to serve as critical landmarks for retargeting. For 
 example, in `Berkeley_Humanoid_Lite/berkeley_humanoid_lite_stl.urdf`, the marker joint 

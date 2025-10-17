@@ -1,8 +1,8 @@
 import pathlib
 from typing import Optional
 
-from mocap_data_converter.config import icub_urdf
-from mocap_data_converter.config.RobotConfig import RobotConfig
+from mahr.config import icub_urdf
+from mahr.config.RobotConfig import RobotConfig
 
 
 class iCub_WholeBody_Config(RobotConfig):

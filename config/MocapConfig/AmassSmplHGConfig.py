@@ -1,8 +1,8 @@
 import os
 import pathlib
 
-from mocap_data_converter.config.MocapConfig import MocapConfig
-from mocap_data_converter.unified_representation import UnifiedRepresentation
+from mahr.config.MocapConfig import MocapConfig
+from mahr.unified_representation import UnifiedRepresentation
 
 
 class AMASS_DanceDB_SMPL_HG_LowerBody_Config(MocapConfig):

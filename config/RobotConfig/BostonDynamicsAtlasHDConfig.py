@@ -1,8 +1,8 @@
 import pathlib
 from typing import Optional
 
-from mocap_data_converter.config import boston_dynamics_atlas_urdf
-from mocap_data_converter.config.RobotConfig import RobotConfig
+from mahr.config import boston_dynamics_atlas_urdf
+from mahr.config.RobotConfig import RobotConfig
 
 
 class Boston_Dynamics_Atlas_HD_WholeBody_Config(RobotConfig):

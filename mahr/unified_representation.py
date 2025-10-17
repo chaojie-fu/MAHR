@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from bvhio.lib.bvh import BvhJoint
 
-from mocap_data_converter.utils.poselib.core.rotation3d import quat_from_rotation_matrix, \
+from mahr.utils.poselib.core.rotation3d import quat_from_rotation_matrix, \
     quat_mul_norm, quat_rotate
 from .utils.asfamcparser.asf_amc_parser import parse_asf, parse_amc, Joint
 from .utils.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState, SkeletonTree

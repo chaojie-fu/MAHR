@@ -7,10 +7,10 @@ import networkx as nx
 import numpy as np
 import torch
 
-from mocap_data_converter.unified_representation import UnifiedRepresentation
-from mocap_data_converter.utils.poselib.core.rotation3d import quat_rotate, quat_inverse
+from mahr.unified_representation import UnifiedRepresentation
+from mahr.utils.poselib.core.rotation3d import quat_rotate, quat_inverse
 
-from mocap_data_converter.config.MocapConfig import MocapConfig
+from mahr.config.MocapConfig import MocapConfig
 
 
 # noinspection PyTypeChecker

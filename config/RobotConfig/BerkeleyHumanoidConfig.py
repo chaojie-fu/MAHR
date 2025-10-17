@@ -1,8 +1,8 @@
 import pathlib
 from typing import Optional
 
-from mocap_data_converter.config import berkeley_humanoid_lite_urdf
-from mocap_data_converter.config.RobotConfig import RobotConfig
+from mahr.config import berkeley_humanoid_lite_urdf
+from mahr.config.RobotConfig import RobotConfig
 
 
 class Berkeley_Humanoid_Lite_WholeBody_Config(RobotConfig):

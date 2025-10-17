@@ -5,7 +5,7 @@ from typing import Iterable, List, Tuple
 import networkx as nx
 import numpy as np
 
-from mocap_data_converter.config.RobotConfig import RobotConfig
+from mahr.config.RobotConfig import RobotConfig
 
 
 class RobotGraphCallable:

@@ -1,11 +1,11 @@
 # python
 import sys
 from line_profiler import LineProfiler
-from mocap_data_converter.utils.mujoco_fk import MujocoURDFRobot
+from mahr.utils.mujoco_fk import MujocoURDFRobot
 import numpy as np
 import mujoco
 
-URDF_PATH = "mocap_data_converter/rsc/assets/urdf/Fourier_GR1/GR1.urdf"  # <- set your URDF path
+URDF_PATH = "mahr/rsc/assets/urdf/Fourier_GR1/GR1.urdf"  # <- set your URDF path
 ITERATIONS = 200  # increase for more stable measurements
 
 robot = MujocoURDFRobot(URDF_PATH)

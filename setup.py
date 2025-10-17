@@ -17,9 +17,9 @@ for dep in os.listdir(third_party_dir):
 
 # noinspection PyTypeChecker
 setup(
-    name="mocap_data_converter",
+    name="mahr",
     version="0.1.0",
-    packages=find_packages(include=["mocap_data_converter"]),  # Limit main module precisely
+    packages=find_packages(include=["mahr"]),  # Limit main module precisely
     install_requires=requirements,  # Auto-process from requirements.txt
     author="FU, Chaojie",
     description="Motion Capture Data Conversion Toolkit",

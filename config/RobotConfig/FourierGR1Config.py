@@ -1,8 +1,8 @@
 import pathlib
 from typing import Optional
 
-from mocap_data_converter.config import fourier_gr1_urdf
-from mocap_data_converter.config.RobotConfig import RobotConfig
+from mahr.config import fourier_gr1_urdf
+from mahr.config.RobotConfig import RobotConfig
 
 
 class Fourier_GR1_WholeBody_Config(RobotConfig):

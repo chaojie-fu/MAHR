@@ -4,7 +4,7 @@ from typing import Dict, Optional
 from urdfpy import URDF
 
 try:  # pragma: no cover - optional dependency handled dynamically
-    from mocap_data_converter.utils.mujoco_fk import MujocoURDFRobot
+    from mahr.utils.mujoco_fk import MujocoURDFRobot
 except ImportError:  # pragma: no cover - MuJoCo not installed
     MujocoURDFRobot = None
 

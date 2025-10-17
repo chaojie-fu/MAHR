@@ -39,13 +39,13 @@ from config.RobotConfig.UnitreeH1 import Unitree_H1_WholeBody_Config
 from config.MocapConfig.CMUAsfAmcConfig import CMU_AsfAmc_WholeBody_Config
 from config.MocapConfig.AmassSmplHGConfig import AMASS_DanceDB_SMPL_HG_WholeBody_Config
 from config.RobotConfig.iCubConfig import iCub_WholeBody_Config
-from mocap_data_converter.config.MocapConfig import MocapConfig
-from mocap_data_converter.config.RobotConfig import RobotConfig
-from mocap_data_converter.utils.graph_distance.compute_graph_distance import compute_vector_graph_distance
-from mocap_data_converter.utils.graph_distance.file_index import generate_file_index
-from mocap_data_converter.utils.graph_distance.mocap_graph_generator import generate_vector_graphs_for_motion
-from mocap_data_converter.utils.graph_distance.robot_graph_generator import generate_vector_symbolic_graph_for_robot
-from mocap_data_converter.utils.poselib.core.rotation3d import rot_matrix_from_quaternion
+from mahr.config.MocapConfig import MocapConfig
+from mahr.config.RobotConfig import RobotConfig
+from mahr.utils.graph_distance.compute_graph_distance import compute_vector_graph_distance
+from mahr.utils.graph_distance.file_index import generate_file_index
+from mahr.utils.graph_distance.mocap_graph_generator import generate_vector_graphs_for_motion
+from mahr.utils.graph_distance.robot_graph_generator import generate_vector_symbolic_graph_for_robot
+from mahr.utils.poselib.core.rotation3d import rot_matrix_from_quaternion
 
 NUM_WORKERS = 120
 
@@ -720,8 +720,8 @@ def main_CMU_to_GR1():
     os.makedirs(root_dir, exist_ok=True)
 
     # mocap options
-    asf_amc_root_dir = "./mocap_data_converter/rsc/all_asfamc/subjects"
-    index_file = "./mocap_data_converter/rsc/all_asfamc/index.json"
+    asf_amc_root_dir = "mahr/rsc/all_asfamc/subjects"
+    index_file = "mahr/rsc/all_asfamc/index.json"
 
     # The pose used for normalization, should be one of "t_pose" and "stand"
     normalize_pose = "t_pose"
@@ -810,7 +810,7 @@ def main_AMASS_to_GR1():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
@@ -855,7 +855,7 @@ def main_AMASS_to_Unitree_G1():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
@@ -900,7 +900,7 @@ def main_AMASS_to_Unitree_H1():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
@@ -945,7 +945,7 @@ def main_AMASS_to_Berkeley_Humanoid_Lite():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
@@ -990,7 +990,7 @@ def main_AMASS_to_Fourier_N1():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
@@ -1035,7 +1035,7 @@ def main_AMASS_to_Boston_Dynamics_Atlas_HD():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
@@ -1080,7 +1080,7 @@ def main_AMASS_to_Agibot_X1():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
@@ -1125,7 +1125,7 @@ def main_AMASS_to_iCub():
     logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
     logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
 
-    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mocap_data_converter", "rsc", "amass_bvh")
+    bvh_root_dir = os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
 
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs)
 
