@@ -9,6 +9,7 @@ import torch
 
 from mahr.unified_representation import UnifiedRepresentation
 from mahr.utils.poselib.core.rotation3d import quat_rotate, quat_inverse
+from mahr.utils.cache_utils import atomic_pickle_dump, safe_pickle_load
 
 from mahr.config.MocapConfig import MocapConfig
 
@@ -31,19 +32,20 @@ def generate_vector_graphs_for_motion(
     Load previously generated global information or generate it using `UnifiedRepresentation` 
     """
     motion_dict_file = os.path.join(motion_dict_dir, f"{mocap_config.name}.pkl")
+    motion_global_dict = None
     if os.path.isfile(motion_dict_file) and (not force_generate_motion_dict):
         logging.getLogger().debug(f"Found existing file: `{motion_dict_file}`. Loading dict from file......")
-        with open(motion_dict_file, "rb") as target_file:
-            motion_global_dict = pickle.load(target_file)
-    else:
+        motion_global_dict = safe_pickle_load(motion_dict_file)
+        if motion_global_dict is None:
+            logging.getLogger().warning(f"Cache {motion_dict_file} invalid or unreadable; regenerating...")
+    if (not os.path.isfile(motion_dict_file)) or force_generate_motion_dict or (motion_global_dict is None):
         if force_generate_motion_dict:
             logging.getLogger().debug(f"Force generating `{motion_dict_file}`......")
         else:
-            logging.getLogger().debug(f"File `{motion_dict_file}` not found, generating file......")
+            logging.getLogger().debug(f"File `{motion_dict_file}` not found or invalid, generating file......")
         motion_representation = mocap_config.uni_repr
         motion_global_dict = motion_representation.to_dict(is_local=False)
-        with open(motion_dict_file, "wb") as target_file:
-            pickle.dump(motion_global_dict, target_file)
+        atomic_pickle_dump(motion_global_dict, motion_dict_file)
     # End generating motion global dict
     # ====================================================================================================
 
@@ -53,15 +55,17 @@ def generate_vector_graphs_for_motion(
     If normalize_edge_weights==True, generate t-pose's global information for later usage
     """
     motion_t_pose_dict_file = os.path.join(motion_dict_dir, f"{mocap_config.name}_t_pose.pkl")
+    motion_global_t_pose_dict = None
     if os.path.isfile(motion_t_pose_dict_file) and (not force_generate_motion_dict):
         logging.getLogger().debug(f"Found existing file: `{motion_t_pose_dict_file}`. Loading dict from file......")
-        with open(motion_t_pose_dict_file, "rb") as target_file:
-            motion_global_t_pose_dict = pickle.load(target_file)
-    else:
+        motion_global_t_pose_dict = safe_pickle_load(motion_t_pose_dict_file)
+        if motion_global_t_pose_dict is None:
+            logging.getLogger().warning(f"Cache {motion_t_pose_dict_file} invalid or unreadable; regenerating...")
+    if (not os.path.isfile(motion_t_pose_dict_file)) or force_generate_motion_dict or (motion_global_t_pose_dict is None):
         if force_generate_motion_dict:
             logging.getLogger().debug(f"Force generating `{motion_t_pose_dict_file}`......")
         else:
-            logging.getLogger().debug(f"File `{motion_t_pose_dict_file}` not found, generating file......")
+            logging.getLogger().debug(f"File `{motion_t_pose_dict_file}` not found or invalid, generating file......")
 
         # generate t pose representation from amc file
         # prior about pose of the amc description should be known in advance to give t-pose joint angles
@@ -69,13 +73,7 @@ def generate_vector_graphs_for_motion(
 
         motion_global_t_pose_dict = t_pose_representation.to_dict(is_local=False)
 
-        with open(motion_t_pose_dict_file, "wb") as target_file:
-            pickle.dump(motion_global_t_pose_dict, target_file)
-
-        # fig = plt.figure(figsize=(10, 10))
-        # ax = fig.add_subplot(1, 1, 1, projection="3d")
-        # t_pose_representation.plot_frame(0, ax)
-        # plt.show()
+        atomic_pickle_dump(motion_global_t_pose_dict, motion_t_pose_dict_file)
 
     toes_idx = [motion_global_t_pose_dict["names"].index(toe) for toe in mocap_config.toes]
     toes_translations = [motion_global_t_pose_dict["global_translations"][0][idx] for idx in toes_idx]
@@ -98,12 +96,14 @@ def generate_vector_graphs_for_motion(
     # generate t-pose motion frame graph or load it from disk
     t_pose_graph_file = os.path.join(frame_graph_dir, f"t_pose.pkl")
 
+    t_pose_graph = None
     if os.path.isfile(t_pose_graph_file) and (not force_generate_graph):
         logging.getLogger().debug(
             f"Found existing t-pose graph for motion `{mocap_config.name}`: `{t_pose_graph_file}`. Loading......")
-        with open(t_pose_graph_file, "rb") as file:
-            t_pose_graph = pickle.load(file)
-    else:
+        t_pose_graph = safe_pickle_load(t_pose_graph_file)
+        if t_pose_graph is None:
+            logging.getLogger().warning(f"Cache {t_pose_graph_file} invalid or unreadable; regenerating...")
+    if (not os.path.isfile(t_pose_graph_file)) or force_generate_graph or (t_pose_graph is None):
         # adjust t-pose root height based on toes' height
         toe_heights = []
         for toe_name in mocap_config.toes:
@@ -207,8 +207,7 @@ def generate_vector_graphs_for_motion(
         t_pose_graph.add_edges_from(vector_edges)
 
         # save graph to directory
-        with open(t_pose_graph_file, "wb") as target_file:
-            pickle.dump(t_pose_graph, target_file)
+        atomic_pickle_dump(t_pose_graph, t_pose_graph_file)
     # End generating t-pose graph
     # ====================================================================================================
 
@@ -221,17 +220,18 @@ def generate_vector_graphs_for_motion(
     for frame in range(num_frames):
         graph_file = os.path.join(frame_graph_dir, f"{frame}.pkl")
 
+        graph = None
         if os.path.isfile(graph_file) and (not force_generate_graph):
             logging.getLogger().debug(
                 f"Found existing graph for motion `{mocap_config.name}` at frame `{frame}`: `{graph_file}`. Loading.")
-            # save graph to directory
-            with open(graph_file, "rb") as file:
-                graph = pickle.load(file)
-        else:
+            graph = safe_pickle_load(graph_file)
+            if graph is None:
+                logging.getLogger().warning(f"Cache {graph_file} invalid or unreadable; regenerating...")
+        if (not os.path.isfile(graph_file)) or force_generate_graph or (graph is None):
             if force_generate_graph:
                 logging.getLogger().debug(f"Force generating graph for `{mocap_config.name}` at frame `{frame}`......")
             else:
-                logging.getLogger().debug(f"Graph for `{mocap_config.name}` at frame `{frame}` not found. "
+                logging.getLogger().debug(f"Graph for `{mocap_config.name}` at frame `{frame}` not found or invalid. "
                                           f"Generating graph......")
 
             graph = nx.Graph()
@@ -322,8 +322,7 @@ def generate_vector_graphs_for_motion(
             graph.add_edges_from(vector_edges)
 
             # save graph to directory
-            with open(graph_file, "wb") as target_file:
-                pickle.dump(graph, target_file)
+            atomic_pickle_dump(graph, graph_file)
 
         graphs.append(graph)
     # End generating mocap graphs

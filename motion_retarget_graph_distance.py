@@ -44,6 +44,7 @@ from mahr.utils.graph_distance.file_index import generate_file_index
 from mahr.utils.graph_distance.mocap_graph_generator import generate_vector_graphs_for_motion
 from mahr.utils.graph_distance.robot_graph_generator import generate_vector_symbolic_graph_for_robot
 from mahr.utils.poselib.core.rotation3d import rot_matrix_from_quaternion
+from mahr.utils.cache_utils import atomic_pickle_dump
 
 # =========================
 # Utility and Helper Functions
@@ -159,14 +160,28 @@ def _cached_motion_config(_cache_dir, _mocap_config, _bvh_motion_file, _norm_pos
         f"mc_cache_{pathlib.Path(_bvh_motion_file).stem}_{_motion_range}.pkl"))
     os.makedirs(os.path.join(_cache_dir, "mocap_config"), exist_ok=True)
 
+    logger = logging.getLogger()
+
     if cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
+        # If file is empty or corrupt, regenerate it
+        try:
+            if cache_file.stat().st_size == 0:
+                raise EOFError("Empty cache file")
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            logger.warning(f"Cache file {cache_file} is invalid or unreadable ({e}); regenerating...")
+            # Remove bad file and regenerate
+            try:
+                cache_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            _mocap_config.load_motion(_bvh_motion_file, _norm_pose_dir, motion_range=_motion_range)
+            atomic_pickle_dump(_mocap_config, cache_file)
+            return _mocap_config
     else:
         _mocap_config.load_motion(_bvh_motion_file, _norm_pose_dir, motion_range=_motion_range)
-
-        with open(cache_file, 'wb') as f:
-            pickle.dump(_mocap_config, f)
+        atomic_pickle_dump(_mocap_config, cache_file)
         return _mocap_config
 
 # =========================
@@ -323,11 +338,23 @@ def optimize_posture_for_vector_graph(
 
     logger.info(f"Start optimizing robot joint angles for frame {frame_idx}")
 
+    loaded_from_cache = False
     if os.path.isfile(cache_file):
-        logger.info(f"Found existing optimized value for frame {frame_idx}, loading")
-        with open(cache_file, 'rb') as file:
-            x0 = pickle.load(file)
-    else:
+        try:
+            if os.path.getsize(cache_file) == 0:
+                raise EOFError("Empty cache file")
+            with open(cache_file, 'rb') as file:
+                x0 = pickle.load(file)
+            loaded_from_cache = True
+            logger.info(f"Found existing optimized value for frame {frame_idx}, loading")
+        except Exception as e:
+            logger.warning(f"Cache file {cache_file} invalid or unreadable ({e}); removing and recomputing...")
+            try:
+                os.remove(cache_file)
+            except Exception:
+                pass
+
+    if not loaded_from_cache:
         logger.info(f"Optimizing frame No. {frame_idx} of motion {mocap_config.name}")
         start_time = time.time()
         obj_construct_time_start = time.time()
@@ -387,11 +414,12 @@ def optimize_posture_for_vector_graph(
 
         x0 = res.x
 
-        # Cache results
-        with open(cache_file, 'wb') as file:
-            pickle.dump(x0, file)
-        with open(cache_value_file, 'wb') as file:
-            pickle.dump(optimize_basis(x0), file)
+        # Cache results atomically
+        try:
+            atomic_pickle_dump(x0, cache_file)
+            atomic_pickle_dump(optimize_basis(x0), cache_value_file)
+        except Exception as e:
+            logger.warning(f"Failed to write cache for frame {frame_idx} ({e}). Continuing without cache.")
 
     # Store results in trajectory
     for joint_idx, joint_name in enumerate(robot_config.robot.actuated_joint_names):

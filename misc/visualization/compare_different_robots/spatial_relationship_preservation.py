@@ -20,6 +20,7 @@ from mahr.utils.graph_distance.mocap_graph_generator import generate_vector_grap
 from mahr.utils.graph_distance.robot_graph_generator import generate_vector_symbolic_graph_for_robot
 from mahr.config import MocapConfig, RobotConfig
 from mahr.rsc import rsc_dir
+from mahr.utils.cache_utils import atomic_pickle_dump, safe_pickle_load
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../../config"))
 
@@ -28,6 +29,10 @@ from config.RobotConfig.VariableSizedHumanoidConfig import VariableSizedHumanoid
 
 matplotlib.use("TkAgg")
 # plt.style.use('science')
+
+# ============
+# IO Utilities for robust caches
+# ============
 
 # cache_root_dir = "graph_distance_AMASS_to_Different_Sized_Robots_custom_weighting"
 # cache_root_dir = "graph_distance_AMASS_to_Different_Sized_Robots_coeff_10"
@@ -259,8 +264,10 @@ def get_robot_norm_pose_graph_and_pose_graph(
 
     edge_filters = get_edge_filters_for_whole_body()
 
-    with open(optimized_cache_file, "rb") as file:
-        x0 = pickle.load(file)
+    x0 = safe_pickle_load(optimized_cache_file)
+    if x0 is None:
+        raise RuntimeError(f"Optimized frame cache not found or corrupt: {optimized_cache_file}. "
+                           f"Please re-run retargeting to regenerate.")
 
     (gc_symbols, root_rot_symbols, root_height_symbol), _, _robot_t_pose_graph, _robot_symbolic_graph, _ = (
         cached_robot_graph_generation(
@@ -295,11 +302,13 @@ def get_robot_graph_distance(_robot_names, cache_root):
             "optimized_trajectories_vector_graph/Stefanos_Zeibekiko_CY_C3D_poses_frame_3335")
         graph_distance_file = os.path.join(optimized_cache_dir, "0_value.pkl")
 
-        with open(graph_distance_file, "rb") as file:
-            gd = pickle.load(file)
-
-        # saved data is squared graph distance, compute square root before assigning
-        graph_distances[idx] = np.sqrt(gd)
+        gd = safe_pickle_load(graph_distance_file)
+        if gd is None:
+            print(f"Warning: graph distance cache missing or corrupt: {graph_distance_file}")
+            graph_distances[idx] = np.nan
+        else:
+            # saved data is squared graph distance, compute square root before assigning
+            graph_distances[idx] = np.sqrt(gd)
 
     return graph_distances
 
@@ -371,15 +380,14 @@ def cached_motion_config(_cache_dir, _normalize_pose, _bvh_motion_file, _norm_po
         f"mc_cache_{_normalize_pose}.pkl"))
 
     if cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
-    else:
-        _mocap_config = AMASS_DanceDB_SMPL_HG_WholeBody_Config(norm_pose_type=_normalize_pose)
-        _mocap_config.load_motion(_bvh_motion_file, _norm_pose_dir)
-
-        with open(cache_file, 'wb') as f:
-            pickle.dump(_mocap_config, f)
-        return _mocap_config
+        cfg = safe_pickle_load(str(cache_file))
+        if cfg is not None:
+            return cfg
+        # else fallthrough to regenerate
+    _mocap_config = AMASS_DanceDB_SMPL_HG_WholeBody_Config(norm_pose_type=_normalize_pose)
+    _mocap_config.load_motion(_bvh_motion_file, _norm_pose_dir)
+    atomic_pickle_dump(_mocap_config, str(cache_file))
+    return _mocap_config
 
 
 def cached_robot_config(robot_idx, _cache_dir, _normalize_pose):
@@ -388,15 +396,13 @@ def cached_robot_config(robot_idx, _cache_dir, _normalize_pose):
         f"rc_cache_{_normalize_pose}.pkl"))
 
     if cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
-    else:
-        robot_urdf = os.path.join(os.path.dirname(__file__), "robots", "parsed_humanoid", f"{robot_idx}.urdf")
-        _robot_config = VariableSizedHumanoidConfig(robot_urdf, norm_pose_type=_normalize_pose)
-
-        with open(cache_file, 'wb') as f:
-            pickle.dump(_robot_config, f)
-        return _robot_config
+        cfg = safe_pickle_load(str(cache_file))
+        if cfg is not None:
+            return cfg
+    robot_urdf = os.path.join(os.path.dirname(__file__), "robots", "parsed_humanoid", f"{robot_idx}.urdf")
+    _robot_config = VariableSizedHumanoidConfig(robot_urdf, norm_pose_type=_normalize_pose)
+    atomic_pickle_dump(_robot_config, str(cache_file))
+    return _robot_config
 
 
 def cached_motion_graph_generation(
@@ -413,21 +419,20 @@ def cached_motion_graph_generation(
         _cache_dir,
         f"mgg_cache_{normalize_edge_weights}_{filter_edges_when_generating_graph}.pkl"))
     if cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
-    else:
-        result = generate_vector_graphs_for_motion(
-            _mocap_config,
-            _motion_dict_dir,
-            _graph_dir,
-            normalize_edge_weights=normalize_edge_weights,
-            force_generate_motion_dict=force_generate_motion_dict,
-            force_generate_graph=force_generate_graph,
-            filter_edges_when_generating_graph=filter_edges_when_generating_graph,
-            edge_filter=edge_filter)
-        with open(cache_file, 'wb') as f:
-            pickle.dump(result, f)
-        return result
+        res = safe_pickle_load(str(cache_file))
+        if res is not None:
+            return res
+    result = generate_vector_graphs_for_motion(
+        _mocap_config,
+        _motion_dict_dir,
+        _graph_dir,
+        normalize_edge_weights=normalize_edge_weights,
+        force_generate_motion_dict=force_generate_motion_dict,
+        force_generate_graph=force_generate_graph,
+        filter_edges_when_generating_graph=filter_edges_when_generating_graph,
+        edge_filter=edge_filter)
+    atomic_pickle_dump(result, str(cache_file))
+    return result
 
 
 def cached_robot_graph_generation(
@@ -441,17 +446,16 @@ def cached_robot_graph_generation(
         _cache_dir,
         f"rgg_cache_{normalize_edge_weights}_{filter_edges_when_generating_graph}.pkl"))
     if cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
-    else:
-        result = generate_vector_symbolic_graph_for_robot(
-            _robot_config,
-            normalize_edge_weights=normalize_edge_weights,
-            filter_edges_when_generating_graph=filter_edges_when_generating_graph,
-            edge_filter=edge_filter)
-        with open(cache_file, 'wb') as f:
-            pickle.dump(result, f)
-        return result
+        res = safe_pickle_load(str(cache_file))
+        if res is not None:
+            return res
+    result = generate_vector_symbolic_graph_for_robot(
+        _robot_config,
+        normalize_edge_weights=normalize_edge_weights,
+        filter_edges_when_generating_graph=filter_edges_when_generating_graph,
+        edge_filter=edge_filter)
+    atomic_pickle_dump(result, str(cache_file))
+    return result
 
 
 def cached_robot_graph_substitution(
@@ -470,45 +474,44 @@ def cached_robot_graph_substitution(
         _cache_dir,
         f"rgs_cache_{normalize_edge_weights}_{filter_edges_when_generating_graph}.pkl"))
     if cache_file.exists():
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
-    else:
-        _robot_graph = nx.Graph()
+        res = safe_pickle_load(str(cache_file))
+        if res is not None:
+            return res
+    _robot_graph = nx.Graph()
 
-        # manually set root rotation matrix according to the reference motion
-        # as the graph of mocap is defined wrt root, any rotation matrix can be specified without changing the result
-        root_mat = np.asarray([[1.0, 0.0, 0.0],
-                               [0.0, 1.0, 0.0],
-                               [0.0, 0.0, 1.0]])
-        root_var_list = []
-        root_value_list = []
-        for row in range(3):
-            for col in range(3):
-                root_var_list.append(_root_rot_symbols[row][col])
-                root_value_list.append(root_mat[row, col])
+    # manually set root rotation matrix according to the reference motion
+    # as the graph of mocap is defined wrt root, any rotation matrix can be specified without changing the result
+    root_mat = np.asarray([[1.0, 0.0, 0.0],
+                           [0.0, 1.0, 0.0],
+                           [0.0, 0.0, 1.0]])
+    root_var_list = []
+    root_value_list = []
+    for row in range(3):
+        for col in range(3):
+            root_var_list.append(_root_rot_symbols[row][col])
+            root_value_list.append(root_mat[row, col])
 
-        graph_edge_props = {}
-        for start_index, start_name in enumerate(_robot_config.key_joints):
-            for end_index, end_name in enumerate(_robot_config.key_joints):
-                edge_data = _robot_symbolic_graph.get_edge_data(start_name, end_name)
-                if edge_data is not None:
-                    position_vector_subs = np.zeros([3, ])
-                    for idx in range(3):
-                        f = sympy.lambdify(
-                            _gc_symbols + [_root_height_symbol] + root_var_list,
-                            edge_data["position_vector"][idx]
-                        )
-                        position_vector_subs[idx] = f(*(_x0.tolist() + root_value_list))
+    graph_edge_props = {}
+    for start_index, start_name in enumerate(_robot_config.key_joints):
+        for end_index, end_name in enumerate(_robot_config.key_joints):
+            edge_data = _robot_symbolic_graph.get_edge_data(start_name, end_name)
+            if edge_data is not None:
+                position_vector_subs = np.zeros([3, ])
+                for idx in range(3):
+                    f = sympy.lambdify(
+                        _gc_symbols + [_root_height_symbol] + root_var_list,
+                        edge_data["position_vector"][idx]
+                    )
+                    position_vector_subs[idx] = f(*(_x0.tolist() + root_value_list))
 
-                    graph_edge_props[(start_name, end_name)] = {
-                        "position_vector": position_vector_subs
-                    }
-        _robot_graph.add_edges_from(graph_edge_props.keys())
-        nx.set_edge_attributes(_robot_graph, graph_edge_props)
+                graph_edge_props[(start_name, end_name)] = {
+                    "position_vector": position_vector_subs
+                }
+    _robot_graph.add_edges_from(graph_edge_props.keys())
+    nx.set_edge_attributes(_robot_graph, graph_edge_props)
 
-        with open(cache_file, 'wb') as f:
-            pickle.dump(_robot_graph, f)
-        return _robot_graph
+    atomic_pickle_dump(_robot_graph, str(cache_file))
+    return _robot_graph
 
 
 def process_robot(_args):

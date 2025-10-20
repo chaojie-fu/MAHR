@@ -5,3 +5,4 @@ __pycache__
 /*.egg-info
 /misc/visualization/compare_different_robots/robots/parsed_humanoid/
 /misc/visualization/compare_different_robots/robots/parsed_humanoid_capsule/
+/cache
