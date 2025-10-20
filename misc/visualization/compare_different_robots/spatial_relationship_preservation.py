@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from matplotlib import cm
 from matplotlib.ticker import FixedLocator
 from scipy.ndimage.filters import gaussian_filter, median_filter
-import multiprocessing
+# removed multiprocessing
 from scipy.stats import spearmanr
 import scienceplots
 
@@ -125,8 +125,8 @@ def load_robot_graphs_and_mapping(robot_names, arm_leg_body_ratios, indexes, moc
         mapping (MultiwayMap), robot_graph_data (list[RobotGraphData])
     """
     args = [(name, mocap_frame_of_interest, cache_root) for name in robot_names]
-    with multiprocessing.Pool() as pool:
-        results = pool.map(process_robot, args)
+    # sequential processing (multiprocessing removed)
+    results = [process_robot(arg) for arg in args]
 
     graph_distances = get_robot_graph_distance(robot_names, cache_root)
 

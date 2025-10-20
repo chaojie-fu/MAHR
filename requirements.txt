@@ -3,7 +3,6 @@ hampel==1.0.2
 ikpy==3.4.2
 liegroups @ git+https://github.com/utiasSTARS/liegroups.git@0.2.0
 matplotlib==3.7.3
-multiprocessing_logging==0.3.4
 netrd==0.3.0
 networkx==3.4.2
 numpy==1.23.5
