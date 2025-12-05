@@ -31,6 +31,7 @@ def generate_vector_graphs_for_motion(
     """
     Load previously generated global information or generate it using `UnifiedRepresentation` 
     """
+    os.makedirs(motion_dict_dir, exist_ok=True)
     motion_dict_file = os.path.join(motion_dict_dir, f"{mocap_config.name}.pkl")
     motion_global_dict = None
     if os.path.isfile(motion_dict_file) and (not force_generate_motion_dict):

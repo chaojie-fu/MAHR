@@ -1,11 +1,60 @@
 import logging
 import time
-from typing import Iterable, List, Tuple
+import os
+from typing import Iterable, List, Tuple, Optional
 
 import networkx as nx
 import numpy as np
+from PIL import Image
 
 from mahr.config.RobotConfig import RobotConfig
+
+class HeightMap:
+    def __init__(self, height_file: Optional[str] = None):
+        """Optional height map loader.
+
+        If height_file is provided and loadable, a normalized grayscale height map is stored in
+        self.height_data. Otherwise, self.height_data is set to None and get_height() will return 0.0
+        as a safe fallback.
+        """
+        self.height_file = height_file
+        self.radius_x = 20.0
+        self.radius_y = 20.0
+        self.elevation_z = 1.0
+
+        self.height_data = None
+        if height_file:
+            try:
+                img = Image.open(height_file).convert('L')  # convert to grey scale image
+                height_arr = np.array(img, dtype=np.float32)
+                height_arr = height_arr / 255.0  # normalize the height map to [0, 1]
+                self.height_data = height_arr
+            except Exception as e:
+                logging.getLogger().warning(
+                    f"Failed to load height map from '{height_file}': {e}. Falling back to flat ground (0.0)."
+                )
+
+    def get_height(self, x: float, y: float) -> float:
+        # If no height data, default to flat ground at 0.0
+        if self.height_data is None:
+            return 0.0
+
+        # Normalize x and y to [0, 1]
+        norm_x = (x + self.radius_x) / (2 * self.radius_x)
+        norm_y = (y + self.radius_y) / (2 * self.radius_y)
+
+        # Map normalized coordinates to pixel indices
+        img_height, img_width = self.height_data.shape[0], self.height_data.shape[1]
+        pixel_x = int(norm_x * (img_width - 1))
+        pixel_y = int((1 - norm_y) * (img_height - 1))  # Invert y-axis for image coordinates
+
+        # Ensure pixel indices are within bounds
+        pixel_x = int(np.clip(pixel_x, 0, img_width - 1))
+        pixel_y = int(np.clip(pixel_y, 0, img_height - 1))
+
+        # Retrieve height value from the height map
+        height_value = float(self.height_data[pixel_y, pixel_x]) * self.elevation_z
+        return float(height_value)
 
 
 class RobotGraphCallable:
@@ -18,17 +67,22 @@ class RobotGraphCallable:
         edge_pairs: List[Tuple[int, int]],
         edge_norm_lookup: dict[frozenset[str], float],
         normalize_edge_weights: bool,
+        height_map_path: Optional[str] = None,
     ):
         self.robot = robot
         self.robot_key_joints = robot_key_joints
         self.edge_pairs = edge_pairs
         self.edge_norm_lookup = edge_norm_lookup
         self.normalize_edge_weights = normalize_edge_weights
+        # Initialize height map from provided path (or None -> flat fallback in HeightMap)
+        self.height_map = HeightMap(height_map_path)
 
     def __call__(
         self,
         joint_angles: Iterable[float],
         root_rotation_matrix: np.ndarray,
+        root_x_pos: float,
+        root_y_pos: float,
         root_height: float
     ) -> nx.Graph:
         cfg_dict = {
@@ -46,16 +100,20 @@ class RobotGraphCallable:
             end_joint = self.robot_key_joints[end_idx_]
 
             if start_joint == "ground":
-                start_height = 0.0
+                start_x_offset = float(root_rotation_matrix[0].dot(fk_current[end_joint][0:3, 3]))
+                start_y_offset = float(root_rotation_matrix[1].dot(fk_current[end_joint][0:3, 3]))
+                start_height = self.height_map.get_height(root_x_pos + start_x_offset, root_y_pos + start_y_offset)
                 end_height = root_height + float(
                     root_rotation_matrix[2].dot(fk_current[end_joint][0:3, 3])
                 )
                 pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype=float)
             elif end_joint == "ground":
+                start_x_offset = float(root_rotation_matrix[0].dot(fk_current[start_joint][0:3, 3]))
+                start_y_offset = float(root_rotation_matrix[1].dot(fk_current[start_joint][0:3, 3]))
                 start_height = root_height + float(
                     root_rotation_matrix[2].dot(fk_current[start_joint][0:3, 3])
                 )
-                end_height = 0.0
+                end_height = self.height_map.get_height(root_x_pos + start_x_offset, root_y_pos + start_y_offset)
                 pos_vector = np.asarray([0.0, 0.0, end_height - start_height], dtype=float)
             else:
                 pos_vector = (
@@ -80,7 +138,8 @@ def generate_vector_symbolic_graph_for_robot(
     robot_config: RobotConfig,
     normalize_edge_weights: bool = False,
     filter_edges_when_generating_graph: bool = False,
-    edge_filter: Iterable[Tuple[int, int]] | None = None
+    edge_filter: Iterable[Tuple[int, int]] | None = None,
+    height_map_path: Optional[str] = None,
 ):
     logging.getLogger().info("Start generating graphs for robot")
     robot = robot_config.robot
@@ -153,10 +212,20 @@ def generate_vector_symbolic_graph_for_robot(
 
     # ====================================================================================================
     # robot graph
+    # Resolve height map path: prefer explicit argument, else environment variable MAHR_HEIGHT_MAP, else None
+    resolved_height_map = height_map_path if height_map_path else os.environ.get("MAHR_HEIGHT_MAP")
+
     return (
         num_dofs,
         (gc_lower_bounds, gc_upper_bounds),
         t_pose_graph,
-        RobotGraphCallable(robot, robot_key_joints, edge_pairs, edge_norm_lookup, normalize_edge_weights),
+        RobotGraphCallable(
+            robot,
+            robot_key_joints,
+            edge_pairs,
+            edge_norm_lookup,
+            normalize_edge_weights,
+            height_map_path=resolved_height_map,
+        ),
         t_pose_toes_horizontal_distance
     )

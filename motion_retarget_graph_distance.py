@@ -26,6 +26,7 @@ import numpy as np
 import scipy.optimize
 import torch
 import argparse
+from typing import Optional
 
 from config.RobotConfig.AgibotX1Config import Agibot_X1_WholeBody_Config
 from config.RobotConfig.FourierGR1Config import Fourier_GR1_WholeBody_Config
@@ -49,7 +50,6 @@ from mahr.utils.cache_utils import atomic_pickle_dump
 # =========================
 # Utility and Helper Functions
 # =========================
-
 
 def get_asf_amc_mocap(file_index, subject_idx, motion_idx):
     """
@@ -195,6 +195,8 @@ def _construct_objective_function(
     robot_graph_fn,
     robot_config,
     root_quat,
+    root_x_pos,
+    root_y_pos,
     flag_weighted_optimization_by_closeness,
     flag_filter_edges_when_generating_graph,
     edge_filter
@@ -209,7 +211,7 @@ def _construct_objective_function(
     def objective(x):
         gc = x[:-1]
         root_height = x[-1]
-        robot_graph = robot_graph_fn(gc, root_mat, root_height)
+        robot_graph = robot_graph_fn(gc, root_mat, root_x_pos, root_y_pos, root_height)
         return compute_vector_graph_distance(
             mocap_graph_at_frame_idx,
             mocap_config.key_bodies,
@@ -230,7 +232,8 @@ def _construct_default_optim_kwargs(
     force_generate_graph=True,
     filter_edges_when_generating_graph=True,
     normalize_edge_weights_using_T_pose=True,
-    weighted_optimization_by_closeness=True
+    weighted_optimization_by_closeness=True,
+    height_map_png: Optional[str] = None,
 ):
     """
     Construct default optimization keyword arguments.
@@ -251,7 +254,8 @@ def _construct_default_optim_kwargs(
         "flag_normalize_edge_weights_using_T_pose": normalize_edge_weights_using_T_pose,
         "flag_weighted_optimization_by_closeness": weighted_optimization_by_closeness,
         "flag_ground_in_graph": ground_in_graph,
-        "edge_filters": edge_filters
+        "edge_filters": edge_filters,
+        "height_map_png": height_map_png,
     }
 
 
@@ -263,11 +267,11 @@ def _calculate_variable_bounds(gc_bounds, x0, constraint_x_by_x0):
     """
     if constraint_x_by_x0:
         variable_lower_bounds = np.maximum(
-            x0 - 10.0 / 120.0,
+            x0 - 50.0 / 120.0,
             np.concatenate([gc_bounds[0], np.asarray([0.0])], axis=0)
         )
         variable_higher_bounds = np.minimum(
-            x0 + 10.0 / 120.0,
+            x0 + 50.0 / 120.0,
             np.concatenate([gc_bounds[1], np.asarray([4.0])], axis=0),
         )
     else:
@@ -302,6 +306,8 @@ def optimize_posture_for_vector_graph(
     mocap_t_pose_graph,
     robot_t_pose_graph,
     root_quat,
+    root_x_pos,
+    root_y_pos,
     gc_bounds,
     x0,
     trajectory,
@@ -322,6 +328,8 @@ def optimize_posture_for_vector_graph(
     :param mocap_t_pose_graph: Mocap T-pose graph.
     :param robot_t_pose_graph: Robot T-pose graph.
     :param root_quat: Root quaternion.
+    :param root_x_pos: Root x position.
+    :param root_y_pos: Root y position.
     :param gc_bounds: Bounds for generalized coordinates.
     :param x0: Initial guess for optimization.
     :param trajectory: Dictionary to store optimized trajectory.
@@ -366,6 +374,8 @@ def optimize_posture_for_vector_graph(
             robot_graph_fn,
             robot_config,
             root_quat,
+            root_x_pos,
+            root_y_pos,
             flag_weighted_optimization_by_closeness,
             flag_filter_edges_when_generating_graph,
             edge_filter
@@ -384,7 +394,15 @@ def optimize_posture_for_vector_graph(
         optim_start_time = time.time()
         if constraint_x_by_x0:
             logger.info("Local Optimizing")
-            res = scipy.optimize.minimize(optimize_basis, x0, method='L-BFGS-B', bounds=x_bounds)
+            res = scipy.optimize.minimize(
+                optimize_basis,
+                x0,
+                method='L-BFGS-B',
+                bounds=x_bounds,
+                options={
+                    "maxiter": 2000,
+                    "maxls": 40,
+                })
             # res = scipy.optimize.differential_evolution(optimize_basis, x_bounds, maxiter=200)
         else:
             logger.info("Global Optimizing")
@@ -392,7 +410,7 @@ def optimize_posture_for_vector_graph(
                 optimize_basis, x_bounds,
                 init="sobol",
                 strategy="best1bin",
-                maxiter=5000,
+                maxiter=1000,
                 tol=1e-4,
             )
         optim_end_time = time.time()
@@ -443,7 +461,8 @@ def motion_retarget_graph_distance(
     flag_filter_edges_when_generating_graph=False,
     edge_filters=None,
     flag_normalize_edge_weights_using_T_pose=True,
-    flag_weighted_optimization_by_closeness=False
+    flag_weighted_optimization_by_closeness=False,
+    height_map_png: Optional[str] = None,
 ):
     """
     Main function to retarget motion using graph distance optimization.
@@ -457,6 +476,7 @@ def motion_retarget_graph_distance(
     :param edge_filters: Edge filter specification.
     :param flag_normalize_edge_weights_using_T_pose: Normalize edge weights using T-pose.
     :param flag_weighted_optimization_by_closeness: Use weighted optimization.
+    :param height_map_png: Optional height map PNG file path.
     :return: None
     """
     logging.getLogger().info(f"Start retargeting motion {mocap_config.name}")
@@ -486,7 +506,8 @@ def motion_retarget_graph_distance(
             robot_config,
             normalize_edge_weights=flag_normalize_edge_weights_using_T_pose,
             filter_edges_when_generating_graph=flag_filter_edges_when_generating_graph,
-            edge_filter=edge_filters))
+            edge_filter=edge_filters,
+            height_map_path=height_map_png))
 
     # ====================================================================================================
 
@@ -533,8 +554,12 @@ def motion_retarget_graph_distance(
     trajectory = {joint: [0] * num_frames_to_compute for joint in robot_config.robot.actuated_joint_names}
     trajectory["root_height"] = [0] * num_frames_to_compute
 
+    horizontal_ratio = robot_t_pose_toes_horizontal_distance / mocap_t_pose_toes_horizontal_distance
+
     x0_initialized = False
     for frame_idx in range(num_frames_to_compute):
+        root_x_pos = float(motion_global_dict["global_translations"][frame_idx][0][0]) * horizontal_ratio
+        root_y_pos = float(motion_global_dict["global_translations"][frame_idx][0][1]) * horizontal_ratio
         x0 = optimize_posture_for_vector_graph(
             frame_idx,
             simplified_mocap_config,
@@ -544,6 +569,8 @@ def motion_retarget_graph_distance(
             t_pose_graph,
             robot_t_pose_graph,
             motion_global_dict["global_rotations"][frame_idx][0],
+            root_x_pos,
+            root_y_pos,
             gc_bounds,
             x0,
             trajectory,
@@ -567,7 +594,6 @@ def motion_retarget_graph_distance(
         "trajectory": []
     }
 
-    horizontal_ratio = robot_t_pose_toes_horizontal_distance / mocap_t_pose_toes_horizontal_distance
     for frame in range(num_frames_to_compute):
         frame_dict = {
             "RootPos": [0.0] * 3,
@@ -1155,6 +1181,8 @@ def _cli_parse_args():
                     help="Disable edge weight normalization by T-pose (enabled by default)")
     adv.add_argument("--no-filter-edges", action="store_true",
                     help="Disable filtering edges when generating graphs (enabled by default)")
+    adv.add_argument("--height-map", dest="height_map", type=str, default=None,
+                    help="Path to grayscale PNG height map. If provided, uneven terrain heights are used; if omitted, flat ground is assumed.")
 
     args = parser.parse_args()
 
@@ -1175,6 +1203,16 @@ def cli_main():
     _setup_logger()
 
     args = _cli_parse_args()
+
+    # Set environment variable so downstream graph generator can pick it up
+    # TODO: use more direct passing instead of env var?
+    if args.height_map:
+        os.environ["MAHR_HEIGHT_MAP"] = args.height_map
+        logging.getLogger().info(f"Height map set to: {args.height_map}")
+    else:
+        if "MAHR_HEIGHT_MAP" in os.environ:
+            del os.environ["MAHR_HEIGHT_MAP"]
+        logging.getLogger().info("No height map provided; using flat ground (0.0).")
 
     # Map advanced toggles to optimization flags
     optim_flags = {

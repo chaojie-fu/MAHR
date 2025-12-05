@@ -18,13 +18,20 @@ mocap_files=(
 )
 robots=(
   "fourier_gr1"
-  "unitree_g1"
-  "unitree_h1"
-  "berkeley_humanoid_lite"
-  "fourier_n1"
-  "boston_dynamics_atlas_hd"
-  "icub"
-  "agibot_x1"
+#  "unitree_g1"
+#  "unitree_h1"
+#  "berkeley_humanoid_lite"
+#  "fourier_n1"
+#  "boston_dynamics_atlas_hd"
+#  "icub"
+#  "agibot_x1"
+)
+
+height_map_indices=(
+  "0"
+  "1"
+  "2"
+  "3"
 )
 
 # iterate over mocap files and robots
@@ -34,6 +41,9 @@ parallel python motion_retarget_graph_distance.py \
   --dataset amass \
   --bvh '{1}' \
   --norm-pose-dir "mahr/rsc/amass_bvh/norm_pose" \
+  --out-dir "./graph_distance_AMASS_to_{2}_Terrain{3}" \
   --robot '{2}' \
   --no-filter-edges \
-  ::: "${mocap_files[@]}" ::: "${robots[@]}"
+  --height-map \
+  "height_map/height_map{3}.png" \
+  ::: "${mocap_files[@]}" ::: "${robots[@]}" ::: "${height_map_indices[@]}"
