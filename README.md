@@ -1,11 +1,11 @@
-# Morphology Agnostic Humanoid Retargeting via Perceptual Aligned Graph Similarity
+# Morphology Agnostic Humanoid Retargeting via Perceptual Motivated Graph Similarity
 
 ![teaser.png](images/teaser.png)
 
 ## About this project
 
 This project is the official implementation of the paper "Morphology-Agnostic Humanoid 
-Retargeting via Perceptual Aligned Graph Similarity". The project provides a complete 
+Retargeting via Perceptual Motivated Graph Similarity". The project provides a complete 
 pipeline for humanoid motion retargeting. ASF/AMC and BVH formats are supported.
 
 We provide a few retargeting examples from CMU and AMASS dataset to several robots and 

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Activate environment if available (non-fatal if missing)
 if [[ -f /home/cjfu/Envs/MAHR/bin/activate ]]; then
   source /home/cjfu/Envs/MAHR/bin/activate
@@ -123,7 +125,7 @@ fi
 # Parallelize over the prepared triples using tab-separated columns
 # Columns: {1}=motion, {2}=frame, {3}=optimizer
 parallel --jobs 96 --colsep '\t' \
-  python ./comparing_optimization_methods.py \
+  python "${SCRIPT_DIR}/comparing_optimization_methods.py" \
     --bvh "{1}" \
     --frame "{2}" \
     --optimizer "{3}" \

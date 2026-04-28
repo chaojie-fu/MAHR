@@ -1,5 +1,7 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Activate environment if available (non-fatal if missing)
 if [[ -f /home/cjfu/Envs/MAHR/bin/activate ]]; then
   source /home/cjfu/Envs/MAHR/bin/activate
@@ -71,7 +73,7 @@ if (( ${#triples[@]} == 0 )); then
 fi
 
 parallel --jobs 96 --colsep '\t' \
-  python ./comparing_optimization_methods_continuous_de.py \
+  python "${SCRIPT_DIR}/comparing_optimization_methods_continuous_de.py" \
     --bvh "mahr/rsc/amass_bvh/ACCAD/G4-spinning_back_kick_poses.bvh" \
     --norm-pose t_pose \
     --norm-pose-dir "mahr/rsc/amass_bvh/norm_pose" \

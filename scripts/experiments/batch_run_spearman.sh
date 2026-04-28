@@ -31,18 +31,19 @@ methods=(
     "jm"
 )
 
-root_dir="/home/cjfu/Retarget_SOTA/MAHR"
-cd ${root_dir}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root_dir="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "${root_dir}"
 
 # ensure log directory exists for the SQLite DB
 mkdir -p "${root_dir}/log"
 
-# Use the project virtualenv Python explicitly so each job runs in the right interpreter
-PY="/home/cjfu/Envs/MAHR/bin/python"
+# Override with MAHR_PYTHON=/path/to/python when a specific environment is needed.
+PY="${MAHR_PYTHON:-python}"
 
 # Run one job per combination using GNU Parallel's argument expansion
 parallel --jobs 64 \
-    echo "Processing Robot: {1}, Motion: {2}, Method: {3}" '&&' ${PY} ${root_dir}/spatial_relationship_preservation_across_robots_motions_methods.py \
+    echo "Processing Robot: {1}, Motion: {2}, Method: {3}" '&&' ${PY} "${SCRIPT_DIR}/spatial_relationship_preservation_across_robots_motions_methods.py" \
         --robot_name {1} \
         --motion_name {2} \
         --method_name {3} \
