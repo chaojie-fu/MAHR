@@ -1,4 +1,7 @@
 <robot name="humanoid">
+    <mujoco>
+        <compiler meshdir="../meshes/" balanceinertia="true" discardvisual="false" fusestatic="false" />
+    </mujoco>
 	<link name="pelvis">
 		<inertial>
 			<origin rpy="0.00000 -0.00000 0.00000" xyz="-0.02000 0.00000 0.00000" />

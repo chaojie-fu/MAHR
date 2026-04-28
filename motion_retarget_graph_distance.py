@@ -37,6 +37,7 @@ from config.RobotConfig.UnitreeG1 import Unitree_G1_WholeBody_Config
 from config.RobotConfig.UnitreeH1 import Unitree_H1_WholeBody_Config
 from config.MocapConfig.CMUAsfAmcConfig import CMU_AsfAmc_WholeBody_Config
 from config.MocapConfig.AmassSmplHGConfig import AMASS_DanceDB_SMPL_HG_WholeBody_Config
+from config.RobotConfig.VariableSizedHumanoidConfig import VariableSizedHumanoidConfig
 from config.RobotConfig.iCubConfig import iCub_WholeBody_Config
 from mahr.config.MocapConfig import MocapConfig
 from mahr.config.RobotConfig import RobotConfig
@@ -228,24 +229,18 @@ def _construct_objective_function(
 def _construct_default_optim_kwargs(
     ground_in_graph,
     edge_filters,
-    force_generate_motion_dict=True,
-    force_generate_graph=True,
+    force_generate_motion_dict=False,
+    force_generate_graph=False,
     filter_edges_when_generating_graph=True,
     normalize_edge_weights_using_T_pose=True,
     weighted_optimization_by_closeness=True,
     height_map_png: Optional[str] = None,
+    frame_skip: int = 1,
 ):
     """
     Construct default optimization keyword arguments.
 
-    :param ground_in_graph: Whether ground height is considered in optimization.
-    :param edge_filters: Filtered graph edges for optimization.
-    :param force_generate_motion_dict: regenerate the motion_dict from asf/amc files
-    :param force_generate_graph: regenerate the graph from motion dict file
-    :param filter_edges_when_generating_graph: filter edges when generating graphs
-    :param normalize_edge_weights_using_T_pose: normalize the edges using T-pose
-    :param weighted_optimization_by_closeness: Optimize graph using weighted edge by closeness
-    :return:
+    Added frame_skip: stride for retargeting (retarget every N frames). Default 1 (no downsampling).
     """
     return {
         "flag_force_generate_motion_dict": force_generate_motion_dict,
@@ -256,6 +251,7 @@ def _construct_default_optim_kwargs(
         "flag_ground_in_graph": ground_in_graph,
         "edge_filters": edge_filters,
         "height_map_png": height_map_png,
+        "frame_skip": frame_skip,
     }
 
 
@@ -298,7 +294,8 @@ def _log_optimization_result(frame_idx, mocap_config, obj_construct_time, v0, ev
 
 
 def optimize_posture_for_vector_graph(
-    frame_idx,
+    src_frame_idx,
+    out_frame_idx,
     mocap_config: MocapConfig,
     robot_config: RobotConfig,
     mocap_graph_at_frame_idx,
@@ -318,33 +315,14 @@ def optimize_posture_for_vector_graph(
     constraint_x_by_x0=True
 ):
     """
-    Optimize robot joint angles for a single frame to minimize the graph distance.
-
-    :param frame_idx: Index of the frame to optimize.
-    :param mocap_config: MocapConfig instance.
-    :param robot_config: RobotConfig instance.
-    :param mocap_graph_at_frame_idx: Mocap graph at the current frame.
-    :param robot_graph_fn: Callable returning the robot graph for provided joint angles.
-    :param mocap_t_pose_graph: Mocap T-pose graph.
-    :param robot_t_pose_graph: Robot T-pose graph.
-    :param root_quat: Root quaternion.
-    :param root_x_pos: Root x position.
-    :param root_y_pos: Root y position.
-    :param gc_bounds: Bounds for generalized coordinates.
-    :param x0: Initial guess for optimization.
-    :param trajectory: Dictionary to store optimized trajectory.
-    :param cache_dir: Directory for caching results.
-    :param flag_weighted_optimization_by_closeness: Whether to use weighted optimization.
-    :param flag_filter_edges_when_generating_graph: Whether to filter edges.
-    :param edge_filter: Edge filter specification.
-    :param constraint_x_by_x0: Whether to constrain optimization by x0.
-    :return: Optimized joint angles as a numpy array.
+    Optimize robot joint angles for a single source frame, writing the result at out_frame_idx in the
+    compact output trajectory. Cache files are keyed by src_frame_idx to avoid collisions.
     """
     logger = logging.getLogger()
-    cache_file = os.path.join(cache_dir, f"{frame_idx}.pkl")
-    cache_value_file = os.path.join(cache_dir, f"{frame_idx}_value.pkl")
+    cache_file = os.path.join(cache_dir, f"{src_frame_idx}.pkl")
+    cache_value_file = os.path.join(cache_dir, f"{src_frame_idx}_value.pkl")
 
-    logger.info(f"Start optimizing robot joint angles for frame {frame_idx}")
+    logger.info(f"Start optimizing robot joint angles for source frame {src_frame_idx} -> output idx {out_frame_idx}")
 
     loaded_from_cache = False
     if os.path.isfile(cache_file):
@@ -354,7 +332,7 @@ def optimize_posture_for_vector_graph(
             with open(cache_file, 'rb') as file:
                 x0 = pickle.load(file)
             loaded_from_cache = True
-            logger.info(f"Found existing optimized value for frame {frame_idx}, loading")
+            logger.info(f"Found existing optimized value for source frame {src_frame_idx}, loading")
         except Exception as e:
             logger.warning(f"Cache file {cache_file} invalid or unreadable ({e}); removing and recomputing...")
             try:
@@ -363,7 +341,7 @@ def optimize_posture_for_vector_graph(
                 pass
 
     if not loaded_from_cache:
-        logger.info(f"Optimizing frame No. {frame_idx} of motion {mocap_config.name}")
+        logger.info(f"Optimizing frame No. {src_frame_idx} (output idx {out_frame_idx}) of motion {mocap_config.name}")
         start_time = time.time()
         obj_construct_time_start = time.time()
 
@@ -403,15 +381,15 @@ def optimize_posture_for_vector_graph(
                     "maxiter": 2000,
                     "maxls": 40,
                 })
-            # res = scipy.optimize.differential_evolution(optimize_basis, x_bounds, maxiter=200)
         else:
             logger.info("Global Optimizing")
             res = scipy.optimize.differential_evolution(
                 optimize_basis, x_bounds,
                 init="sobol",
                 strategy="best1bin",
-                maxiter=1000,
+                maxiter=5000,
                 tol=1e-4,
+                workers=1
             )
         optim_end_time = time.time()
         eval_start_time = time.time()
@@ -420,7 +398,7 @@ def optimize_posture_for_vector_graph(
 
         # Log optimization result
         _log_optimization_result(
-            frame_idx, mocap_config,
+            src_frame_idx, mocap_config,
             obj_construct_time_end - obj_construct_time_start,
             v0,
             eval_end_time - eval_start_time,
@@ -432,17 +410,17 @@ def optimize_posture_for_vector_graph(
 
         x0 = res.x
 
-        # Cache results atomically
+        # Cache results atomically (cache keyed by source frame)
         try:
             atomic_pickle_dump(x0, cache_file)
             atomic_pickle_dump(optimize_basis(x0), cache_value_file)
         except Exception as e:
-            logger.warning(f"Failed to write cache for frame {frame_idx} ({e}). Continuing without cache.")
+            logger.warning(f"Failed to write cache for source frame {src_frame_idx} ({e}). Continuing without cache.")
 
-    # Store results in trajectory
+    # Store results in the compact trajectory using out_frame_idx
     for joint_idx, joint_name in enumerate(robot_config.robot.actuated_joint_names):
-        trajectory[joint_name][frame_idx] = float(x0[joint_idx])
-    trajectory["root_height"][frame_idx] = float(x0[-1])
+        trajectory[joint_name][out_frame_idx] = float(x0[joint_idx])
+    trajectory["root_height"][out_frame_idx] = float(x0[-1])
 
     return x0
 
@@ -463,23 +441,14 @@ def motion_retarget_graph_distance(
     flag_normalize_edge_weights_using_T_pose=True,
     flag_weighted_optimization_by_closeness=False,
     height_map_png: Optional[str] = None,
+    frame_skip: int = 1,
 ):
     """
     Main function to retarget motion using graph distance optimization.
 
-    :param cache_dir: Directory for caching and output.
-    :param mocap_config: MocapConfig instance.
-    :param robot_config: RobotConfig instance.
-    :param flag_force_generate_motion_dict: Force regeneration of motion dict.
-    :param flag_force_generate_graph: Force regeneration of graph.
-    :param flag_filter_edges_when_generating_graph: Whether to filter edges.
-    :param edge_filters: Edge filter specification.
-    :param flag_normalize_edge_weights_using_T_pose: Normalize edge weights using T-pose.
-    :param flag_weighted_optimization_by_closeness: Use weighted optimization.
-    :param height_map_png: Optional height map PNG file path.
-    :return: None
+    Added frame_skip: process every N-th source frame. Output fps = source_fps / frame_skip.
     """
-    logging.getLogger().info(f"Start retargeting motion {mocap_config.name}")
+    logging.getLogger().info(f"Start retargeting motion {mocap_config.name} (frame_skip={frame_skip})")
     # ====================================================================================================
     # define directories
     os.makedirs(cache_dir, exist_ok=True)
@@ -530,7 +499,9 @@ def motion_retarget_graph_distance(
     # ====================================================================================================
 
     assert len(mocap_config.key_bodies) == len(robot_config.key_joints), \
-        "Mocap and Robot don't have same number of key bodies"
+        "Mocap and Robot don't have same number of key bodies\n" \
+        f"Mocap key bodies: {mocap_config.key_bodies}\n" \
+        f"Robot key joints: {robot_config.key_joints}"
 
     variable_lower_bounds = np.concatenate([gc_bounds[0], np.asarray([0.0])], axis=0)
     variable_higher_bounds = np.concatenate([gc_bounds[1], np.asarray([4.0])], axis=0)
@@ -542,8 +513,17 @@ def motion_retarget_graph_distance(
     logging.getLogger().info(f"optimized joint angles will be saved to {optimized_dir}")
 
     # num_frames_to_compute = 100
-    num_frames_to_compute = len(mocap_graphs)
-    logging.getLogger().info(f"Start retargeting, totally {num_frames_to_compute} frames to be optimized")
+    num_source_frames = len(mocap_graphs)
+    # num_source_frames = 100
+    logging.getLogger().info(f"Source motion has {num_source_frames} frames")
+
+    # Build list of source frame indices to process
+    if frame_skip <= 1:
+        frame_indices = list(range(num_source_frames))
+    else:
+        frame_indices = list(range(0, num_source_frames, frame_skip))
+    num_output_frames = len(frame_indices)
+    logging.getLogger().info(f"Start retargeting, will optimize {num_output_frames} output frames (stride={frame_skip})")
 
     # remove redundant class members from class to accelerate pickle
     simplified_mocap_config = deepcopy(mocap_config)
@@ -551,24 +531,25 @@ def motion_retarget_graph_distance(
     simplified_mocap_config.norm_pose_repr = None
 
     # always run sequentially (multiprocessing removed)
-    trajectory = {joint: [0] * num_frames_to_compute for joint in robot_config.robot.actuated_joint_names}
-    trajectory["root_height"] = [0] * num_frames_to_compute
+    trajectory = {joint: [0] * num_output_frames for joint in robot_config.robot.actuated_joint_names}
+    trajectory["root_height"] = [0] * num_output_frames
 
     horizontal_ratio = robot_t_pose_toes_horizontal_distance / mocap_t_pose_toes_horizontal_distance
 
     x0_initialized = False
-    for frame_idx in range(num_frames_to_compute):
-        root_x_pos = float(motion_global_dict["global_translations"][frame_idx][0][0]) * horizontal_ratio
-        root_y_pos = float(motion_global_dict["global_translations"][frame_idx][0][1]) * horizontal_ratio
+    for out_idx, src_idx in enumerate(frame_indices):
+        root_x_pos = float(motion_global_dict["global_translations"][src_idx][0][0]) * horizontal_ratio
+        root_y_pos = float(motion_global_dict["global_translations"][src_idx][0][1]) * horizontal_ratio
         x0 = optimize_posture_for_vector_graph(
-            frame_idx,
+            src_idx,
+            out_idx,
             simplified_mocap_config,
             robot_config,
-            mocap_graphs[frame_idx],
+            mocap_graphs[src_idx],
             robot_graph_fn,
             t_pose_graph,
             robot_t_pose_graph,
-            motion_global_dict["global_rotations"][frame_idx][0],
+            motion_global_dict["global_rotations"][src_idx][0],
             root_x_pos,
             root_y_pos,
             gc_bounds,
@@ -586,15 +567,16 @@ def motion_retarget_graph_distance(
     motion_file = os.path.join(optimized_dir, f"{file_name}_gd.json")
     motion_file_v2 = os.path.join(optimized_dir, f"{file_name}_gd_v2.json")
     motion_json = {
-        "fps": mocap_config.uni_repr.fps,
+        "fps": float(mocap_config.uni_repr.fps) / float(frame_skip),
         "trajectory": []
     }
     motion_json_v2 = {
-        "fps": mocap_config.uni_repr.fps,
+        "fps": float(mocap_config.uni_repr.fps) / float(frame_skip),
         "trajectory": []
     }
 
-    for frame in range(num_frames_to_compute):
+    # write out compacted frames using mapping
+    for out_idx, src_idx in enumerate(frame_indices):
         frame_dict = {
             "RootPos": [0.0] * 3,
             "RootOrient": [0.0] * 4,
@@ -605,22 +587,22 @@ def motion_retarget_graph_distance(
             "RootOrient": [0.0] * 4,
             "JointPos": {name: 0.0 for name in robot_config.robot.actuated_joint_names}
         }
-        frame_dict["RootPos"][0] = float(motion_global_dict["global_translations"][frame][0][0]) * horizontal_ratio
-        frame_dict["RootPos"][1] = float(motion_global_dict["global_translations"][frame][0][1]) * horizontal_ratio
-        frame_dict["RootPos"][2] = trajectory["root_height"][frame]
+        frame_dict["RootPos"][0] = float(motion_global_dict["global_translations"][src_idx][0][0]) * horizontal_ratio
+        frame_dict["RootPos"][1] = float(motion_global_dict["global_translations"][src_idx][0][1]) * horizontal_ratio
+        frame_dict["RootPos"][2] = trajectory["root_height"][out_idx]
 
-        frame_dict_v2["RootPos"][0] = float(motion_global_dict["global_translations"][frame][0][0]) * horizontal_ratio
-        frame_dict_v2["RootPos"][1] = float(motion_global_dict["global_translations"][frame][0][1]) * horizontal_ratio
-        frame_dict_v2["RootPos"][2] = trajectory["root_height"][frame]
+        frame_dict_v2["RootPos"][0] = float(motion_global_dict["global_translations"][src_idx][0][0]) * horizontal_ratio
+        frame_dict_v2["RootPos"][1] = float(motion_global_dict["global_translations"][src_idx][0][1]) * horizontal_ratio
+        frame_dict_v2["RootPos"][2] = trajectory["root_height"][out_idx]
 
         for rot_idx in range(4):
-            frame_dict["RootOrient"][rot_idx] = float(motion_global_dict["global_rotations"][frame][0][rot_idx])
-            frame_dict_v2["RootOrient"][rot_idx] = float(motion_global_dict["global_rotations"][frame][0][rot_idx])
+            frame_dict["RootOrient"][rot_idx] = float(motion_global_dict["global_rotations"][src_idx][0][rot_idx])
+            frame_dict_v2["RootOrient"][rot_idx] = float(motion_global_dict["global_rotations"][src_idx][0][rot_idx])
 
         for joint_idx, joint_name in enumerate(robot_config.robot.actuated_joint_names):
             output_idx = robot_config.index_mapping[joint_name]
-            frame_dict["JointPos"][output_idx] = trajectory[joint_name][frame]
-            frame_dict_v2["JointPos"][joint_name] = trajectory[joint_name][frame]
+            frame_dict["JointPos"][output_idx] = trajectory[joint_name][out_idx]
+            frame_dict_v2["JointPos"][joint_name] = trajectory[joint_name][out_idx]
         motion_json["trajectory"].append(frame_dict)
         motion_json_v2["trajectory"].append(frame_dict_v2)
     with open(motion_file, "w") as f:
@@ -675,7 +657,15 @@ def execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, 
                                                **validated_optim_kwargs)
 
 
-def main_CMU_to_GR1(asf=None, amc=None, fps=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_CMU_to_GR1(
+        asf=None,
+        amc=None,
+        fps=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget CMU motion capture data to the GR1 robot using graph distance optimization.
     If asf/amc/fps are provided, only that specific motion is retargeted.
@@ -754,7 +744,72 @@ def main_CMU_to_GR1(asf=None, amc=None, fps=None, out_dir=None, norm_pose=None, 
     execute_retargeting_asf_amc(root_dir, file_index, motion_trajs, mocap_config, robot_config, optim_kwargs)
 
 
-def main_AMASS_to_GR1(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_Parameterized_Robots(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        robot_urdf=None,
+        **kwargs
+):
+    """
+    Retarget AMASS motion capture data to parameterized humanoid robots using graph distance optimization.
+    """
+    assert robot_urdf is not None, "Please provide the URDF file path of the target robot using --robot_urdf"
+
+    _setup_logger()
+
+    root_dir = out_dir if out_dir is not None else os.path.join(
+        "./graph_distance_AMASS_to_Parameterized_Robots",
+        pathlib.Path(robot_urdf).stem
+    )
+    os.makedirs(root_dir, exist_ok=True)
+
+    # The pose used for normalization, should be one of "t_pose" and "stand"
+    normalize_pose = norm_pose if norm_pose is not None else "t_pose"
+
+    # mocap config
+    mocap_config = AMASS_DanceDB_SMPL_HG_WholeBody_Config(norm_pose_type=normalize_pose)
+
+    # robot config
+    robot_config = VariableSizedHumanoidConfig(robot_urdf, norm_pose_type=normalize_pose)
+
+    assert (("ground" in mocap_config.key_bodies) and ("ground" in robot_config.key_joints)) or \
+           (("ground" not in mocap_config.key_bodies) and ("ground" not in robot_config.key_joints))
+    flag_ground_in_graph = (("ground" in mocap_config.key_bodies) and ("ground" in robot_config.key_joints))
+
+    # edge filter that remove the edges between upper body and lower body
+    edge_filters = _build_edge_filters(len(mocap_config.key_bodies))
+
+    optim_kwargs = _construct_default_optim_kwargs(flag_ground_in_graph, edge_filters)
+    if optim_flags:
+        optim_kwargs.update({k: v for k, v in optim_flags.items() if k in optim_kwargs})
+
+    logging.getLogger().info(f"Start retargeting from AMASS Mocap to "
+                             f"Robot {robot_config.name} using graph distance")
+    for k, v in optim_kwargs.items():
+        logging.getLogger().info(f"{k}: {v}")
+    logging.getLogger().info(f"normalize_pose: {normalize_pose}")
+    logging.getLogger().info(f"root_dir: {root_dir}")
+    logging.getLogger().info(f"key bodies for mocap data: {mocap_config.key_bodies}")
+    logging.getLogger().info(f"urdf_file: {robot_config.name}")
+    logging.getLogger().info(f"key joints for robot: {robot_config.key_joints}")
+    logging.getLogger().info(f"index mapping for json file: {robot_config.index_mapping}")
+
+    bvh_root_dir = bvh if bvh is not None else os.path.join(os.path.dirname(__file__), "mahr", "rsc", "amass_bvh")
+
+    execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
+
+
+def main_AMASS_to_GR1(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -799,7 +854,14 @@ def main_AMASS_to_GR1(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
 
 
-def main_AMASS_to_Unitree_G1(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_Unitree_G1(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -844,7 +906,14 @@ def main_AMASS_to_Unitree_G1(bvh=None, norm_pose_dir=None, out_dir=None, norm_po
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
 
 
-def main_AMASS_to_Unitree_H1(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_Unitree_H1(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -889,7 +958,14 @@ def main_AMASS_to_Unitree_H1(bvh=None, norm_pose_dir=None, out_dir=None, norm_po
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
 
 
-def main_AMASS_to_Berkeley_Humanoid_Lite(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_Berkeley_Humanoid_Lite(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -934,7 +1010,14 @@ def main_AMASS_to_Berkeley_Humanoid_Lite(bvh=None, norm_pose_dir=None, out_dir=N
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
 
 
-def main_AMASS_to_Fourier_N1(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_Fourier_N1(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -979,7 +1062,14 @@ def main_AMASS_to_Fourier_N1(bvh=None, norm_pose_dir=None, out_dir=None, norm_po
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
 
 
-def main_AMASS_to_Boston_Dynamics_Atlas_HD(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_Boston_Dynamics_Atlas_HD(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -1024,7 +1114,14 @@ def main_AMASS_to_Boston_Dynamics_Atlas_HD(bvh=None, norm_pose_dir=None, out_dir
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
 
 
-def main_AMASS_to_Agibot_X1(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_Agibot_X1(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -1069,7 +1166,14 @@ def main_AMASS_to_Agibot_X1(bvh=None, norm_pose_dir=None, out_dir=None, norm_pos
     execute_retargeting_bvh(root_dir, bvh_root_dir, mocap_config, robot_config, optim_kwargs, norm_pose_dir=norm_pose_dir)
 
 
-def main_AMASS_to_iCub(bvh=None, norm_pose_dir=None, out_dir=None, norm_pose=None, optim_flags=None):
+def main_AMASS_to_iCub(
+        bvh=None,
+        norm_pose_dir=None,
+        out_dir=None,
+        norm_pose=None,
+        optim_flags=None,
+        **kwargs
+):
     """
     Retarget AMASS motion capture data to the GR1 robot using graph distance optimization.
     If a BVH file path is provided, only that file is retargeted.
@@ -1129,6 +1233,7 @@ def _robot_config_from_name(name: str, norm_pose: str):
         "boston_dynamics_atlas_hd": Boston_Dynamics_Atlas_HD_WholeBody_Config,
         "icub": iCub_WholeBody_Config,
         "agibot_x1": Agibot_X1_WholeBody_Config,
+        "parameterized_humanoid": VariableSizedHumanoidConfig,
     }
     if name not in mapping:
         raise ValueError(
@@ -1168,7 +1273,7 @@ def _cli_parse_args():
     rob = parser.add_argument_group("Robot and normalization")
     rob.add_argument("--robot", required=True,
                     help="Target robot name (case-insensitive): "
-                         "fourier_gr1, unitree_g1, unitree_h1, berkeley_humanoid_lite, fourier_n1, "
+                         "fourier_gr1, unitree_g1, unitree_h1, berkeley_humanoid_lite, fourier_n1, parameterized_humanoid."
                          "boston_dynamics_atlas_hd, icub, agibot_x1")
     rob.add_argument("--norm-pose", choices=["t_pose", "stand"], default="t_pose",
                     help="Normalization pose used for both mocap and robot (default: t_pose)")
@@ -1183,6 +1288,13 @@ def _cli_parse_args():
                     help="Disable filtering edges when generating graphs (enabled by default)")
     adv.add_argument("--height-map", dest="height_map", type=str, default=None,
                     help="Path to grayscale PNG height map. If provided, uneven terrain heights are used; if omitted, flat ground is assumed.")
+    adv.add_argument("--frame-skip", dest="frame_skip", type=int, default=1,
+                    help="Retarget every N frames (stride). Output fps = source_fps / N. Default 1 (no downsampling).")
+
+    # Special flags for parameterized robots
+    spec = parser.add_argument_group("Special (for parameterized robots)")
+    spec.add_argument("--robot-urdf", type=str, default=None,
+                      help="Path to the URDF file of the target parameterized robot (required for parameterized robots)")
 
     args = parser.parse_args()
 
@@ -1195,6 +1307,11 @@ def _cli_parse_args():
         missing = [flag for flag in ["bvh", "norm_pose_dir"] if getattr(args, flag) is None]
         if missing:
             parser.error(f"--dataset amass requires: --bvh, --norm-pose-dir (missing: {', '.join(missing)})")
+
+    if args.robot == "parameterized_humanoid":
+        missing = [flag for flag in ["robot_urdf"] if getattr(args, flag) is None]
+        if missing:
+            parser.error(f"--robot parameterized_humanoid requires: --robot-urdf (missing: {', '.join(missing)})")
 
     return args
 
@@ -1219,6 +1336,7 @@ def cli_main():
         "flag_weighted_optimization_by_closeness": not args.no_weight_by_closeness,
         "flag_normalize_edge_weights_using_T_pose": not args.no_normalize_using_t_pose,
         "flag_filter_edges_when_generating_graph": not args.no_filter_edges,
+        "frame_skip": args.frame_skip,
     }
 
     dataset = args.dataset.strip().lower()
@@ -1235,6 +1353,7 @@ def cli_main():
             "boston_dynamics_atlas_hd": main_AMASS_to_Boston_Dynamics_Atlas_HD,
             "icub": main_AMASS_to_iCub,
             "agibot_x1": main_AMASS_to_Agibot_X1,
+            "parameterized_humanoid": main_AMASS_to_Parameterized_Robots,
         }
         if robot_name not in amass_dispatch:
             raise ValueError(
@@ -1246,6 +1365,7 @@ def cli_main():
             out_dir=args.out_dir,
             norm_pose=args.norm_pose,
             optim_flags=optim_flags,
+            robot_urdf=args.robot_urdf,
         )
         return
 
@@ -1260,6 +1380,7 @@ def cli_main():
             out_dir=args.out_dir,
             norm_pose=args.norm_pose,
             optim_flags=optim_flags,
+            robot_urdf=args.robot_urdf,
         )
         return
 

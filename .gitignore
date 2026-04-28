@@ -6,3 +6,10 @@ __pycache__
 /misc/visualization/compare_different_robots/robots/parsed_humanoid/
 /misc/visualization/compare_different_robots/robots/parsed_humanoid_capsule/
 /cache
+/retargeted_motions
+/AGENTS.md
+/mahr/rsc/amass_bvh/
+/ComparisonOfOptimizationMethods/
+/imitation_ablation/
+/Archived/
+/results/

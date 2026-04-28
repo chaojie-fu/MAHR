@@ -40,8 +40,8 @@ class AMASS_DanceDB_SMPL_HG_WholeBody_Config(MocapConfig):
             "left_knee", "left_ankle", "left_foot",
             "right_knee", "right_ankle", "right_foot",
             "spine3",
-            "left_shoulder", "left_elbow", "left_wrist",
-            "right_shoulder", "right_elbow", "right_wrist",
+            "left_shoulder", "left_elbow", "left_middle1", "left_thumb2",
+            "right_shoulder", "right_elbow", "right_middle1", "right_thumb2",
             "ground"
         ]
         self.toes = ["left_foot", "right_foot"]

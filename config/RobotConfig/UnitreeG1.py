@@ -15,8 +15,8 @@ class Unitree_G1_WholeBody_Config(RobotConfig):
             "left_knee_marker", "left_ankle_marker", "left_toe_marker",
             "right_knee_marker", "right_ankle_marker", "right_toe_marker",
             "head_marker",
-            "left_shoulder_marker", "left_elbow_marker", "left_hand_marker",
-            "right_shoulder_marker", "right_elbow_marker", "right_hand_marker",
+            "left_shoulder_marker", "left_elbow_marker", "left_hand_marker", "left_thumb_marker",
+            "right_shoulder_marker", "right_elbow_marker", "right_hand_marker", "right_thumb_marker",
             "ground"
         ]
         self.toes = ["left_toe_marker", "right_toe_marker"]

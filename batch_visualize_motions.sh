@@ -18,6 +18,8 @@ methods=(
     "MAHR"
     "MAHR_Wider_Constraint"
     "PHC"
+    "IK"
+    "JM"
 )
 
 # a dict containing the method name and its corresponding available robots
@@ -26,6 +28,8 @@ method_robots["GMR"]="berkeley_humanoid_lite fourier_n1 unitree_g1 unitree_h1"
 method_robots["MAHR"]="Agibot_X1 Berkeley_Humanoid_Lite Boston_Dynamics_Atlas_HD Fourier_N1 GR1 iCub Unitree_G1 Unitree_H1"
 method_robots["MAHR_Wider_Constraint"]="agibot_x1 boston_dynamics_atlas_hd fourier_gr1 gr1 unitree_g1 berkeley_humanoid_lite fourier_n1 icub unitree_h1"
 method_robots["PHC"]="Unitree_G1_PROCESSED Unitree_H1_PROCESSED"
+method_robots["IK"]="GR1"
+method_robots["JM"]="GR1"
 
 # a dict containing mappings from robot dir names to urdf keys
 declare -A robot_dir_to_urdf_key

@@ -87,12 +87,12 @@ class VariableSizedHumanoidConfig(RobotConfig):
             "left_hip_y": 7,
             "left_knee": 8,
             "left_ankle_y": 9,
-            "right_shoulder1": 13,
-            "right_shoulder2": 14,
-            "right_shoulder3": 15,
+            "right_shoulder_x": 13,
+            "right_shoulder_y": 14,
+            "right_shoulder_z": 15,
             "right_elbow": 16,
-            "left_shoulder1": 17,
-            "left_shoulder2": 18,
-            "left_shoulder3": 19,
+            "left_shoulder_x": 17,
+            "left_shoulder_y": 18,
+            "left_shoulder_z": 19,
             "left_elbow": 20
         }
