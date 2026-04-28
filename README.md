@@ -134,6 +134,38 @@ end of the script, and run the script. The retargeted motion will be saved in
 directories similar to `graph_distance_xxx/optimized_trajectories_vector_graph/` in 
 json format, which contains the retargeted joint angles and root states.
 
+Some example retargeted motion JSON files are provided under the `retargeted_motions/`
+directory.
+
+### Visualizing Retargeted Motions
+
+Use `visualize_retargeted_motion.py` to play back a retargeted trajectory on the
+corresponding robot URDF. For example, to visualize a Unitree G1 trajectory from the
+provided examples:
+
+```bash
+python visualize_retargeted_motion.py \
+  -t retargeted_motions/UnitreeG1/mahr/80_43_poses.json \
+  -u mahr/rsc/assets/urdf/unitree_g1/g1_29dof_stl.urdf \
+  --no-loop
+```
+
+The `-t/--trajectory` argument points to the retargeted JSON file, and
+`-u/--urdf` points to the robot URDF used for playback.
+
+Use the following URDF paths for the supported robots:
+
+| Robot | URDF path |
+| --- | --- |
+| Agibot X1 | `mahr/rsc/assets/urdf/Agibot_X1/urdf/x1_stl.urdf` |
+| Berkeley Humanoid Lite | `mahr/rsc/assets/urdf/Berkeley_Humanoid_Lite/berkeley_humanoid_lite_stl.urdf` |
+| Boston Dynamics Atlas HD | `mahr/rsc/assets/urdf/Boston_Dynamics_Atlas/urdf/atlas_v4_with_multisense_stl.urdf` |
+| Fourier GR1 | `mahr/rsc/assets/urdf/Fourier_GR1/GR1.urdf` |
+| Fourier N1 | `mahr/rsc/assets/urdf/Fourier_N1/urdf/N1_raw_stl.urdf` |
+| iCub | `mahr/rsc/assets/urdf/iCub/robots/iCubGazeboV2_7/model_stl.urdf` |
+| Unitree G1 | `mahr/rsc/assets/urdf/unitree_g1/g1_29dof_stl.urdf` |
+| Unitree H1 | `mahr/rsc/assets/urdf/unitree_h1/urdf/h1_stl.urdf` |
+
 ### Acknowledgements
 
 We would like to thank the following projects for their contributions:
