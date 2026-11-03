@@ -1,0 +1,66 @@
+{
+  "key_joints": [
+    "pelvis_marker",
+    "left_knee_marker",
+    "left_ankle_marker",
+    "left_toe_marker",
+    "right_knee_marker",
+    "right_ankle_marker",
+    "right_toe_marker",
+    "head_marker",
+    "left_shoulder_marker",
+    "left_elbow_marker",
+    "left_hand_marker",
+    "right_shoulder_marker",
+    "right_elbow_marker",
+    "right_hand_marker",
+    "ground"
+  ],
+  "toes": [
+    "left_toe_marker",
+    "right_toe_marker"
+  ],
+  "norm_pose_in_rad": {
+    "left_hip_yaw_joint": 0.0,
+    "left_hip_roll_joint": 0.0,
+    "left_hip_pitch_joint": 0.0,
+    "left_knee_joint": 0.0,
+    "left_ankle_joint": 0.0,
+    "right_hip_yaw_joint": 0.0,
+    "right_hip_roll_joint": 0.0,
+    "right_hip_pitch_joint": 0.0,
+    "right_knee_joint": 0.0,
+    "right_ankle_joint": 0.0,
+    "torso_joint": 0.0,
+    "left_shoulder_pitch_joint": 0.0,
+    "left_shoulder_roll_joint": 1.57,
+    "left_shoulder_yaw_joint": 0.0,
+    "left_elbow_joint": 1.57,
+    "right_shoulder_pitch_joint": 0.0,
+    "right_shoulder_roll_joint": -1.57,
+    "right_shoulder_yaw_joint": 0.0,
+    "right_elbow_joint": 1.57
+  },
+  "urdf": "../../MAHR/mahr/rsc/assets/urdf/unitree_h1/urdf/h1_stl.urdf",
+  "source_rest": "../../MAHR/mahr/rsc/amass_bvh/norm_pose/norm_pose_t_pose.bvh",
+  "source_landmarks": [
+    "pelvis",
+    "left_knee",
+    "left_ankle",
+    "left_foot",
+    "right_knee",
+    "right_ankle",
+    "right_foot",
+    "spine3",
+    "left_shoulder",
+    "left_elbow",
+    "left_middle1",
+    "right_shoulder",
+    "right_elbow",
+    "right_middle1"
+  ],
+  "source_toes": [
+    "left_foot",
+    "right_foot"
+  ]
+}
