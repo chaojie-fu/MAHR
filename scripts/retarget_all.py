@@ -4,12 +4,12 @@ import json
 from pathlib import Path
 import numpy as np
 from scipy.optimize._numdiff import approx_derivative
-from mahr_v2.config import DEFAULT_ASSET_ROOT
-from mahr_v2.robots import PRESETS
-from mahr_v2.pipeline import run
-from mahr_v2.objective import FrameObjective, CLIPPED_POSE_LIMIT
-from mahr_v2.solver import Settings
-from mahr_v2.trajectory import save_result
+from mahr.config import DEFAULT_ASSET_ROOT
+from mahr.robots import PRESETS
+from mahr.pipeline import run
+from mahr.objective import FrameObjective, CLIPPED_POSE_LIMIT
+from mahr.solver import Settings
+from mahr.trajectory import save_result
 
 
 def main():

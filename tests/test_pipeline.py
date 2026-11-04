@@ -7,11 +7,11 @@ from unittest.mock import patch
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
-from mahr_v2.pipeline import prepare, run, solve
-from mahr_v2.objective import FrameObjective
-from mahr_v2.robots import AgibotX1Config
-from mahr_v2.solver import Settings
-from mahr_v2.trajectory import save_result
+from mahr.pipeline import prepare, run, solve
+from mahr.objective import FrameObjective
+from mahr.robots import AgibotX1Config
+from mahr.solver import Settings
+from mahr.trajectory import save_result
 from test_core import ASSET_ROOT, MOTION
 
 

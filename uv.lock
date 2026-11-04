@@ -92,7 +92,7 @@ wheels = [
 ]
 
 [[package]]
-name = "mahr-v2"
+name = "mahr"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -1,9 +1,9 @@
 import unittest
 import numpy as np
 from numpy.testing import assert_allclose
-from mahr_v2.motion import Motion
-from mahr_v2.source_ground import calibrate_source_ground
-from mahr_v2.pipeline import prepare
+from mahr.motion import Motion
+from mahr.source_ground import calibrate_source_ground
+from mahr.pipeline import prepare
 from test_core import ASSET_ROOT,MOTION
 
 

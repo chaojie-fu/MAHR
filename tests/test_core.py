@@ -5,10 +5,10 @@ import numpy as np
 from numpy.testing import assert_allclose
 from scipy.optimize._numdiff import approx_derivative
 from scipy.spatial.transform import Rotation
-from mahr_v2.graph import EdgeSpace, proximity_weights
-from mahr_v2.pipeline import prepare
-from mahr_v2.objective import FrameObjective
-from mahr_v2.solver import Retargeter, Settings
+from mahr.graph import EdgeSpace, proximity_weights
+from mahr.pipeline import prepare
+from mahr.objective import FrameObjective
+from mahr.solver import Retargeter, Settings
 
 ASSET_ROOT = Path(os.environ.get('MAHR_ASSET_ROOT', Path(__file__).resolve().parents[1]/'assets'))
 MOTION = ASSET_ROOT/'motions/DanceDB_SMPLHG/Clio_Haniotikos_C3D_poses_short.bvh'

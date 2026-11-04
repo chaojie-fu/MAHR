@@ -1,8 +1,8 @@
 from pathlib import Path
 import unittest
 import xml.etree.ElementTree as ET
-from mahr_v2.config import DEFAULT_ASSET_ROOT, RobotConfig, load_preset
-from mahr_v2.robots import PRESETS, AgibotX1Config
+from mahr.config import DEFAULT_ASSET_ROOT, RobotConfig, load_preset
+from mahr.robots import PRESETS, AgibotX1Config
 
 
 class ConfigTests(unittest.TestCase):

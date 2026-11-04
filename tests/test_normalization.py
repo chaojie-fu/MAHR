@@ -1,9 +1,9 @@
 import unittest
 import numpy as np
 from numpy.testing import assert_allclose
-from mahr_v2.graph import EdgeSpace
-from mahr_v2.motion import Motion,prepare_source
-from mahr_v2.normalization import edge_denominators,skeleton_height
+from mahr.graph import EdgeSpace
+from mahr.motion import Motion,prepare_source
+from mahr.normalization import edge_denominators,skeleton_height
 
 class NormalizationTests(unittest.TestCase):
     def test_tiny_zero_and_ordinary_edges(self):

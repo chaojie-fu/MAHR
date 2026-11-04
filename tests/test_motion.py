@@ -4,8 +4,8 @@ from pathlib import Path
 import unittest
 import numpy as np
 from numpy.testing import assert_allclose
-from mahr_v2.pipeline import prepare
-from mahr_v2.solver import Retargeter
+from mahr.pipeline import prepare
+from mahr.solver import Retargeter
 from test_core import ASSET_ROOT as P,MOTION as M
 
 class MotionTests(unittest.TestCase):
