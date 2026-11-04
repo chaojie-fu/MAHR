@@ -42,8 +42,14 @@ class Trajectory:
 def save_result(result: 'RetargetResult', path: str | Path):
     """Save trajectory and diagnostics. Computing a result never writes files."""
     path = Path(path)
-    payload = json.dumps(result.trajectory.to_payload(), separators=(',', ':'), allow_nan=False)
+    payload = result.trajectory.to_payload()
+    terrain_path = path.with_suffix('.terrain.npz')
+    if result.prepared.terrain is not None:
+        payload['terrain'] = terrain_path.name
+    payload = json.dumps(payload, separators=(',', ':'), allow_nan=False)
     report = json.dumps(result.report, indent=2, allow_nan=False)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if result.prepared.terrain is not None:
+        result.prepared.terrain.save(terrain_path)
     path.write_text(payload)
     path.with_suffix('.stats.json').write_text(report)

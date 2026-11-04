@@ -22,21 +22,26 @@ class EdgeSpace:
         self.ground_indices = np.flatnonzero(self.ground)
         self.ground_sources = self.a[self.ground_indices]
 
-    def vectors(self, positions, rotation, height, *, out=None):
-        """Positions in root frame; rotation maps root to world. Flat ground z=0."""
+    def vectors(self, positions, rotation, height, *, ground_heights=None, out=None):
+        """Positions in root frame; optional world heights for the ground edges."""
         v = np.subtract(positions[self.safe_b], positions[self.a], out=out)
         g = self.ground_indices
         v[g] = 0.
         v[g, 2] = -(positions[self.ground_sources] @ rotation[2] + height)
+        if ground_heights is not None:
+            v[g, 2] += ground_heights
         return v
 
-    def derivatives(self, landmark_jac, rotation, *, out=None):
+    def derivatives(self, landmark_jac, rotation, *, ground_slopes=None, out=None):
         d = np.empty((len(self.pairs), 3, landmark_jac.shape[-1] + 1)) if out is None else out
         np.subtract(landmark_jac[self.safe_b], landmark_jac[self.a], out=d[:, :, :-1])
         d[:, :, -1] = 0.
         g = self.ground_indices
         d[g] = 0.
         d[g, 2, :-1] = -np.einsum('j,ejd->ed', rotation[2], landmark_jac[self.ground_sources])
+        if ground_slopes is not None:
+            d[g, 2, :-1] += np.einsum('ej,ejd->ed', ground_slopes @ rotation[:2],
+                                      landmark_jac[self.ground_sources])
         d[g, 2, -1] = -1.
         return d
 

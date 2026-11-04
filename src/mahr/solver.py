@@ -32,7 +32,7 @@ class Settings:
 
 
 class Retargeter:
-    def __init__(self, robot, edges, target_scale, settings=None, *, posture_reference):
+    def __init__(self, robot, edges, target_scale, settings=None, *, posture_reference, terrain=None):
         self.robot, self.edges = robot, edges
         self.scale = np.asarray(target_scale, dtype=float)
         if self.scale.shape != (len(edges.pairs),) or not np.isfinite(self.scale).all() or np.any(self.scale <= 0):
@@ -40,11 +40,12 @@ class Retargeter:
         if len(robot.landmarks) != edges.count:
             raise ValueError('Landmark count differs from edge topology')
         self.settings = settings or Settings()
+        self.terrain = terrain
         self.posture_reference = np.asarray(posture_reference, dtype=float).copy()
         if self.posture_reference.shape != (robot.dofs,) or not np.isfinite(self.posture_reference).all():
             raise ValueError('Posture reference must contain a finite coordinate for every joint')
 
-    def solve(self, source_vectors, root_rotations, initial=None, frame_dt=REFERENCE_FRAME_DT):
+    def solve(self, source_vectors, root_rotations, initial=None, frame_dt=REFERENCE_FRAME_DT, *, root_xy=None):
         if not np.isfinite(frame_dt) or frame_dt <= 0:
             raise ValueError('frame_dt must be positive and finite')
         source_vectors = np.asarray(source_vectors, dtype=float)
@@ -54,7 +55,13 @@ class Retargeter:
                 or root_rotations.shape != (count, 3, 3)
                 or not np.isfinite(source_vectors).all() or not np.isfinite(root_rotations).all()):
             raise ValueError('Expected finite [frames, edges, 3] and [frames, 3, 3] arrays')
-        lower, upper = np.r_[self.robot.lower, 0.], np.r_[self.robot.upper, 4.]
+        ground = np.zeros(count)
+        if self.terrain is not None:
+            root_xy = np.asarray(root_xy, dtype=float)
+            if root_xy.shape != (count, 2) or not np.isfinite(root_xy).all():
+                raise ValueError('Terrain solving requires finite world root XY for every frame')
+            ground = self.terrain.sample(root_xy)
+        lower, upper = np.r_[self.robot.lower, ground[0]], np.r_[self.robot.upper, ground[0] + 4.]
         x = (lower + upper) / 2 if initial is None else np.asarray(initial, dtype=float).copy()
         if x.shape != lower.shape or not np.isfinite(x).all():
             raise ValueError('Initial state must contain all joints and root height')
@@ -64,14 +71,18 @@ class Retargeter:
         step[:-1] = np.minimum(step[:-1], self.settings.max_joint_velocity * frame_dt)
         step[-1] = min(step[-1], self.settings.max_root_velocity * frame_dt)
         for frame, (target, rotation) in enumerate(zip(source_vectors, root_rotations)):
+            lower[-1], upper[-1] = ground[frame], ground[frame] + 4.
             lo, hi = lower, upper
             if frame:
                 lo = np.maximum(lower, x - step)
                 hi = np.minimum(upper, x + step)
+            if np.any(lo > hi):
+                raise RuntimeError(f'Terrain and root velocity bounds are incompatible at frame {frame}')
             objective = FrameObjective(self.robot, self.edges, self.scale, target, rotation, self.settings,
                                        posture_reference=self.posture_reference,
                                        previous=x.copy() if frame else None,
-                                       older=trajectory[-2] if frame > 1 else None, frame_dt=frame_dt)
+                                       older=trajectory[-2] if frame > 1 else None, frame_dt=frame_dt,
+                                       terrain=self.terrain, root_xy=None if root_xy is None else root_xy[frame])
             start = perf_counter()
             result = minimize(objective.value_gradient, x, jac=True, bounds=list(zip(lo, hi)), method='L-BFGS-B',
                               options=dict(maxiter=self.settings.maxiter, maxls=40,

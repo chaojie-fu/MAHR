@@ -13,6 +13,7 @@ from .solver import Retargeter, Settings
 from .normalization import DEFAULT_MIN_EDGE_RATIO, skeleton_height, validate_ratio
 from .source_ground import calibrate_source_ground
 from .trajectory import Trajectory
+from .terrain import HeightMap
 
 
 @dataclass
@@ -28,6 +29,7 @@ class PreparedMotion:
     normalization: dict
     urdf: Path
     preparation_seconds: float
+    terrain: HeightMap | None = None
 
 
 @dataclass
@@ -38,12 +40,15 @@ class RetargetResult:
 
 
 def prepare(asset_root, motion_path, *, robot='g1', frame_slice=slice(None),
-            config: RobotConfig | None = None, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO) -> PreparedMotion:
+            config: RobotConfig | None = None, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO,
+            terrain: HeightMap | None = None) -> PreparedMotion:
     start = perf_counter()
     validate_ratio(min_edge_ratio)
     preset = load_preset(asset_root, robot) if config is None else config
     robot = Robot(preset.urdf, preset.target_landmarks)
     edges = EdgeSpace(len(preset.landmark_pairs), preset.include_ground, preset.edges)
+    if terrain is not None and not len(edges.ground_indices):
+        raise ValueError('Terrain retargeting requires at least one ground edge')
     qnorm = robot.coordinates(preset.normalization_pose)
     qinitial = robot.coordinates(preset.initial_pose)
     posture_reference = robot.coordinates(preset.posture_pose)
@@ -69,6 +74,8 @@ def prepare(asset_root, motion_path, *, robot='g1', frame_slice=slice(None),
         motion, rest, preset.source_landmarks, preset.source_toes, edges,
         min_edge_ratio=min_edge_ratio, body_height=source_height)
     ratio = np.linalg.norm(toe_positions[0, :2] - toe_positions[1, :2]) / foot_distance
+    if terrain is not None:
+        root_height += float(terrain.sample(motion.positions[0, 0, :2] * ratio))
     normalization = dict(
         min_edge_ratio=min_edge_ratio,
         height_definition='rest joint/body origins: maximum z minus minimum toe z',
@@ -81,7 +88,7 @@ def prepare(asset_root, motion_path, *, robot='g1', frame_slice=slice(None),
         robot=robot, edges=edges, scales=scales, source_vectors=vectors, motion=motion,
         horizontal_ratio=ratio, initial=np.r_[qinitial, root_height],
         posture_reference=posture_reference, normalization=normalization, urdf=preset.urdf,
-        preparation_seconds=perf_counter() - start)
+        preparation_seconds=perf_counter() - start, terrain=terrain)
 
 
 def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetResult:
@@ -90,8 +97,10 @@ def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetRes
     settings = settings or Settings()
     motion = data.motion
     coordinates, stats = Retargeter(
-        data.robot, data.edges, data.scales, settings, posture_reference=data.posture_reference
-    ).solve(data.source_vectors, motion.root_rotations, data.initial, frame_dt=1 / motion.fps)
+        data.robot, data.edges, data.scales, settings, posture_reference=data.posture_reference,
+        terrain=data.terrain
+    ).solve(data.source_vectors, motion.root_rotations, data.initial, frame_dt=1 / motion.fps,
+            root_xy=motion.positions[:, 0, :2] * data.horizontal_ratio if data.terrain is not None else None)
     solve_seconds = perf_counter() - start
     trajectory = Trajectory.from_solution(data.robot.names, coordinates, motion, data.horizontal_ratio)
     delta = np.diff(trajectory.joint_positions, axis=0)
@@ -107,12 +116,14 @@ def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetRes
         mean_graph_loss=float(np.mean([s['graph_loss'] for s in stats])),
         mean_loss=float(np.mean([s['loss'] for s in stats])),
         unsuccessful_frames=sum(not s['success'] for s in stats), frames_detail=stats)
+    if data.terrain is not None:
+        report['terrain'] = data.terrain.describe()
     return RetargetResult(data, trajectory, report)
 
 
 def run(asset_root, motion_path, *, settings: Settings | None = None, robot='g1',
         frame_slice=slice(None), config: RobotConfig | None = None,
-        min_edge_ratio=DEFAULT_MIN_EDGE_RATIO) -> RetargetResult:
+        min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, terrain: HeightMap | None = None) -> RetargetResult:
     data = prepare(asset_root, motion_path, robot=robot, frame_slice=frame_slice,
-                   config=config, min_edge_ratio=min_edge_ratio)
+                   config=config, min_edge_ratio=min_edge_ratio, terrain=terrain)
     return solve(data, settings)

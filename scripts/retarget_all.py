@@ -10,6 +10,7 @@ from mahr.pipeline import run
 from mahr.objective import FrameObjective, CLIPPED_POSE_LIMIT
 from mahr.solver import Settings
 from mahr.trajectory import save_result
+from mahr.terrain_cli import add_terrain_arguments, terrain_from_arguments
 
 
 def main():
@@ -19,22 +20,30 @@ def main():
     parser.add_argument('--motion', type=Path)
     parser.add_argument('--output', type=Path, default=Path('results/all_robots'))
     parser.add_argument('--reference', type=Path, help='Compare complete trajectories against saved results')
+    add_terrain_arguments(parser)
     args = parser.parse_args()
+    try:
+        terrain = terrain_from_arguments(args)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     motion = args.motion or args.asset_root/'motions/DanceDB_SMPLHG/Clio_Haniotikos_C3D_poses_short.bvh'
     args.output.mkdir(parents=True, exist_ok=True)
     report = {}
     settings = Settings()
     for name in PRESETS:
         output = args.output/f'{name}.json'
-        result = run(args.asset_root, motion, robot=name, settings=settings)
+        result = run(args.asset_root, motion, robot=name, settings=settings, terrain=terrain)
         save_result(result, output)
         data, stats = result.prepared, result.report
         robot, clip = data.robot, data.motion
         trajectory = result.trajectory
         q = trajectory.coordinates
         assert len(q) == len(clip.positions) and np.isfinite(q).all()
-        assert np.all(q >= np.r_[robot.lower, 0.]-1e-8)
-        assert np.all(q <= np.r_[robot.upper, 4.]+1e-8)
+        ground = terrain.sample(trajectory.root_positions[:, :2]) if terrain is not None else 0.
+        assert np.all(q[:, :-1] >= robot.lower-1e-8)
+        assert np.all(q[:, :-1] <= robot.upper+1e-8)
+        assert np.all(q[:, -1] >= ground-1e-8)
+        assert np.all(q[:, -1] <= ground+4.+1e-8)
         if len(q) > 1:
             assert np.max(abs(np.diff(q[:,:-1], axis=0)))*clip.fps <= settings.max_joint_velocity+1e-7
             assert np.max(abs(np.diff(q[:,-1])))*clip.fps <= settings.max_root_velocity+1e-7
@@ -42,12 +51,16 @@ def main():
         max_error = 0.
         for index in checked:
             x = q[index].copy()
-            x[np.abs(np.abs(x)-CLIPPED_POSE_LIMIT)<1e-4] += .001
+            relative = x.copy()
+            if terrain is not None:
+                relative[-1] -= ground[index]
+            x[np.abs(np.abs(relative)-CLIPPED_POSE_LIMIT)<1e-4] += .001
             obj = FrameObjective(robot, data.edges, data.scales, data.source_vectors[index],
                                  clip.root_rotations[index], settings,
                                  posture_reference=data.posture_reference,
                                  previous=q[index-1] if index else None,
-                                 older=q[index-2] if index>1 else None, frame_dt=1/clip.fps)
+                                 older=q[index-2] if index>1 else None, frame_dt=1/clip.fps,
+                                 terrain=terrain, root_xy=trajectory.root_positions[index, :2])
             _, gradient = obj.value_gradient(x)
             numeric = approx_derivative(obj.value, x, abs_step=1e-8).ravel()
             max_error = max(max_error, float(np.max(abs(gradient-numeric))))

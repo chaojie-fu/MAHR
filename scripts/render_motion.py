@@ -7,6 +7,8 @@ import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
+from mahr.rendering import add_ground
+from mahr.terrain import HeightMap
 
 
 def main():
@@ -22,6 +24,7 @@ def main():
     if args.stride < 1:
         parser.error('stride must be positive')
     payload = json.loads(args.trajectory.read_text())
+    terrain = HeightMap.load(args.trajectory.parent / payload['terrain']) if 'terrain' in payload else None
     root = ET.parse(args.urdf).getroot()
     for mesh in root.iter('mesh'):
         mesh.set('filename', str((args.urdf.resolve().parent / mesh.get('filename')).resolve()))
@@ -38,8 +41,7 @@ def main():
                 geom.rgba[:3] = np.maximum(geom.rgba[:3], .35)
     body = next(iter(spec.worldbody.bodies))
     body.add_joint(name='playback_root', type=mujoco.mjtJoint.mjJNT_FREE)
-    spec.worldbody.add_geom(name='floor', type=mujoco.mjtGeom.mjGEOM_PLANE,
-                            size=[20, 20, .01], rgba=[.22, .27, .33, 1], contype=0, conaffinity=0)
+    add_ground(spec, terrain)
     spec.worldbody.add_light(pos=[1, -2, 5], dir=[-1, 2, -5], diffuse=[.8, .8, .8])
     spec.visual.headlight.ambient = [.4, .4, .4]
     spec.visual.headlight.diffuse = [.7, .7, .7]
