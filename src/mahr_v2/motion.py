@@ -17,7 +17,7 @@ class Motion:
 
 
 def read_bvh(path, frame_slice=slice(None)):
-    """Y-up BVH -> Z-up using legacy (z,x,y) permutation; preserve input units.
+    """Y-up BVH -> Z-up using the (z,x,y) permutation; preserve input units.
 
     Decode whole channel columns at once; propagate one joint at a time across all
     selected frames. End sites have no semantic landmarks and are skipped.
@@ -97,8 +97,8 @@ def read_bvh(path, frame_slice=slice(None)):
     return Motion(tuple(names), positions[:, :, perm], rotations[:, 0][:, perm][:, :, perm], 1. / dt / stride)
 
 
-def prepare_source(motion, rest, landmark_names, toe_names, edges, normalize=True,
-                   min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, body_height=None, clamp_source_ground=True):
+def prepare_source(motion, rest, landmark_names, toe_names, edges,
+                   min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, body_height=None):
     ids = [motion.names.index(n) for n in landmark_names]
     rest_ids = [rest.names.index(n) for n in landmark_names]
     toes = [rest.names.index(n) for n in toe_names]
@@ -109,19 +109,14 @@ def prepare_source(motion, rest, landmark_names, toe_names, edges, normalize=Tru
     rest_local = (rest_world[rest_ids] - rest_world[0]) @ rest.root_rotations[0]
     # Rest body edges use rest root orientation; ground edges remain world vertical.
     rest_vectors = edges.vectors(rest_local, rest.root_rotations[0], rest_world[0, 2])
-    if normalize:
-        if body_height is None:
-            body_height = skeleton_height(rest.positions[0], rest.positions[0, toes])
-        scale = edge_denominators(np.linalg.norm(rest_vectors, axis=1), body_height,
-                                  min_edge_ratio, source=True)
-    else:
-        scale = np.ones(len(edges.pairs))
+    if body_height is None:
+        body_height = skeleton_height(rest.positions[0], rest.positions[0, toes])
+    scale = edge_denominators(np.linalg.norm(rest_vectors, axis=1), body_height, min_edge_ratio)
     local = np.einsum('fkj,fji->fki', motion.positions[:, ids] - motion.positions[:, :1], motion.root_rotations)
     vectors = np.array([edges.vectors(p, r, h)
                         for p, r, h in zip(local, motion.root_rotations, motion.positions[:, 0, 2])])
-    if clamp_source_ground:
-        # Body -> ground edges use -height. Positive z means source penetration.
-        vectors[:, edges.ground, 2] = np.minimum(vectors[:, edges.ground, 2], 0.)
+    # Body -> ground uses -height: clip source penetration before normalization.
+    vectors[:, edges.ground, 2] = np.minimum(vectors[:, edges.ground, 2], 0.)
     vectors /= scale[None, :, None]
     foot_distance = np.linalg.norm(rest.positions[0, toes[0], :2] - rest.positions[0, toes[1], :2])
     if foot_distance <= 0:

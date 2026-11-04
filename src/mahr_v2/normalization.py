@@ -5,8 +5,8 @@ DEFAULT_MIN_EDGE_RATIO = .05
 
 
 def validate_ratio(ratio):
-    if not np.isfinite(ratio) or not 0 <= ratio <= 1:
-        raise ValueError('min_edge_ratio must be finite and between 0 and 1')
+    if not np.isfinite(ratio) or not 0 < ratio <= 1:
+        raise ValueError('min_edge_ratio must be finite and in (0, 1]')
 
 
 def skeleton_height(positions, toe_positions=None):
@@ -23,14 +23,11 @@ def skeleton_height(positions, toe_positions=None):
     return height
 
 
-def edge_denominators(lengths, height, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, source=False):
+def edge_denominators(lengths, height, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO):
     validate_ratio(min_edge_ratio)
     lengths = np.asarray(lengths, dtype=float)
     if not np.isfinite(lengths).all() or np.any(lengths < 0):
         raise ValueError('Rest edge lengths must be finite and nonnegative')
-    if min_edge_ratio == 0:
-        # Explicit legacy mode, including its asymmetric handling of zero edges.
-        return lengths + 1e-5 if source else np.where(lengths > 0, lengths, 1.)
     if not np.isfinite(height) or height <= 0:
         raise ValueError('Rest-pose skeleton height must be positive and finite')
     return np.maximum(lengths, min_edge_ratio * height)

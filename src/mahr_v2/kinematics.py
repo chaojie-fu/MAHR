@@ -23,17 +23,7 @@ class Robot:
                 raise ValueError(f'Unsupported joint: {joint.attrib}')
             if joint.find('mimic') is not None:
                 raise ValueError('Mimic joints require an explicit coordinate mapping')
-        ground_spheres = []
         for link in root.findall('link'):
-            for collision in link.findall('collision'):
-                sphere = collision.find('geometry/sphere')
-                if sphere is not None:
-                    origin = collision.find('origin')
-                    center = np.fromstring(origin.get('xyz', '0 0 0') if origin is not None else '0 0 0', sep=' ')
-                    radius = float(sphere.get('radius'))
-                    if center.shape != (3,) or not np.isfinite(center).all() or not np.isfinite(radius) or radius <= 0:
-                        raise ValueError('Invalid collision sphere')
-                    ground_spheres.append((link.get('name'), center, radius))
             for tag in ('visual', 'collision'):
                 for child in link.findall(tag):
                     link.remove(child)
@@ -61,12 +51,6 @@ class Robot:
         limited = self.model.jnt_limited.astype(bool)
         self.lower = np.where(limited, self.model.jnt_range[:, 0], -np.pi)
         self.upper = np.where(limited, self.model.jnt_range[:, 1], np.pi)
-        self.rest_coordinates = np.zeros(self.model.nq)
-        self.foot_bodies = np.empty(0, dtype=int)
-        self.foot_up_axes = np.empty((0,3))
-        self.ground_meshes = []
-        self.ground_spheres = [(mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, n), p, r)
-                               for n, p, r in ground_spheres]
         self._jacp = np.empty((3, self.model.nv))
         self._jacr = np.empty_like(self._jacp)
 
@@ -80,6 +64,17 @@ class Robot:
             raise ValueError(f'Unknown joints: {unknown}')
         return np.array([values.get(n, 0.) for n in self.names])
 
+    def body_positions(self, q, names=None):
+        """Evaluate body origins explicitly; omit names for all non-world bodies."""
+        ids = slice(1, None)
+        if names is not None:
+            ids = np.array([mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, n) for n in names])
+            if np.any(ids < 0):
+                raise ValueError(f'Missing URDF bodies: {[n for n, i in zip(names, ids) if i < 0]}')
+        self.data.qpos[:] = q
+        mujoco.mj_kinematics(self.model, self.data)
+        return self.data.xpos[ids].copy()
+
     def evaluate(self, q, jacobian=True):
         self.data.qpos[:] = q
         mujoco.mj_kinematics(self.model, self.data)
@@ -92,64 +87,3 @@ class Robot:
             mujoco.mj_jacBody(self.model, self.data, self._jacp, self._jacr, int(body))
             jac[k] = self._jacp
         return positions, jac
-
-
-    def ground_clearances(self, rotation, height, jacobian=False):
-        """Collision-sphere and cached foot surface clearances using evaluated FK.
-
-        Foot hull vertices exactly bound linear height over the original STL mesh.
-        """
-        count = len(self.ground_spheres) + sum(len(v) for _,v in self.ground_meshes)
-        clearances = np.empty(count)
-        jac = np.zeros((count, self.dofs+1)) if jacobian else None
-        for i, (body, center, radius) in enumerate(self.ground_spheres):
-            point = self.data.xpos[body] + self.data.xmat[body].reshape(3, 3) @ center
-            clearances[i] = rotation[2] @ point + height - radius
-            if jacobian:
-                mujoco.mj_jac(self.model, self.data, self._jacp, self._jacr, point, body)
-                jac[i, :-1] = rotation[2] @ self._jacp
-                jac[i, -1] = 1.
-        index = len(self.ground_spheres)
-        normal = rotation[2]
-        for body, vertices in self.ground_meshes:
-            offsets = vertices @ self.data.xmat[body].reshape(3,3).T
-            points = offsets + self.data.xpos[body]
-            count = len(vertices)
-            clearances[index:index+count] = points @ normal + height
-            if jacobian:
-                mujoco.mj_jacBody(self.model, self.data, self._jacp, self._jacr, body)
-                jac[index:index+count, :-1] = normal @ self._jacp + np.cross(offsets,normal) @ self._jacr
-                jac[index:index+count, -1] = 1.
-            index += count
-        return (clearances, jac) if jacobian else clearances
-
-
-    def ground_penalty(self, rotation, height, jacobian=False):
-        """Fused hinge-square value/gradient; average per foot, not per mesh vertex.
-
-        Aggregate vertex forces before applying body Jacobians. This avoids a
-        [vertices, dofs] array and keeps mesh density from increasing its weight.
-        """
-        value = 0.
-        gradient = np.zeros(self.dofs+1)
-        normal = rotation[2]
-        for body, center, radius in self.ground_spheres:
-            point = self.data.xpos[body]+self.data.xmat[body].reshape(3,3)@center
-            depth = max(0., radius-normal@point-height)
-            value += depth**2
-            if jacobian and depth > 0:
-                mujoco.mj_jac(self.model,self.data,self._jacp,self._jacr,point,body)
-                gradient[:-1] -= 2*depth*(normal@self._jacp)
-                gradient[-1] -= 2*depth
-        for body, vertices in self.ground_meshes:
-            body_rotation = self.data.xmat[body].reshape(3,3)
-            clearance = vertices@(body_rotation.T@normal)+normal@self.data.xpos[body]+height
-            depth = np.maximum(-clearance,0.)
-            value += np.dot(depth,depth)/len(vertices)
-            if jacobian and np.any(depth > 0):
-                mujoco.mj_jacBody(self.model,self.data,self._jacp,self._jacr,body)
-                total = depth.sum()/len(vertices)
-                offset = body_rotation@(depth@vertices/len(vertices))
-                gradient[:-1] -= 2*(total*(normal@self._jacp)+np.cross(offset,normal)@self._jacr)
-                gradient[-1] -= 2*total
-        return float(value), gradient

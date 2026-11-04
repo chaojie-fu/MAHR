@@ -37,16 +37,14 @@ class EdgeSpace:
         d[g, 2, -1] = -1.
         return d
 
-    def scales(self, positions, height, source=False, *, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, body_height=None):
+    def scales(self, positions, height, *, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, body_height=None):
         lengths = np.linalg.norm(self.vectors(positions, np.eye(3), height), axis=1)
-        if body_height is None and min_edge_ratio > 0:
+        if body_height is None:
             body_height = skeleton_height(positions)
-        return edge_denominators(lengths, body_height, min_edge_ratio, source=source)
+        return edge_denominators(lengths, body_height, min_edge_ratio)
 
 
-def proximity_weights(source_vectors, weighted=True):
-    if not weighted:
-        return np.ones(len(source_vectors))
+def proximity_weights(source_vectors):
     # Legacy implementation uses NORMALIZED vectors, unlike paper Eq. 4's raw distances.
     logits = -5. * np.linalg.norm(source_vectors, axis=1)
     weights = np.exp(logits - logits.max())

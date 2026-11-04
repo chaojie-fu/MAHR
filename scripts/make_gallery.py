@@ -50,7 +50,7 @@ def main():
         f"Source: {first.get('source_motion','Clio_Haniotikos_C3D_poses_short.bvh')}; {first['frames']} frames; stand normalization.",
         'Videos play at original speed, rendered at every fourth source frame (about 30 fps).',
         f'{total} total frames; {failed} non-converged frames; joint bounds and inter-frame step bounds checks passed.',
-        f"Analytic gradient checks at frames {first.get('checked_frames',[0,249,499])}; see summary.json for optional old urdfpy FK errors.",
+        f"Analytic gradient checks at frames {first.get('checked_frames',[0,249,499])}; see summary.json for numerical derivative errors.",
         'These are kinematic playback results; physical balance/contact feasibility is not tested.',
         'H1 and GR1 preview colors are lifted for visibility; trajectory data are unchanged.','',
         '| Robot | DoFs | Solve seconds | FPS | Mean objective | Failed frames |',

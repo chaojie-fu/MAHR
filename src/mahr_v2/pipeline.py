@@ -1,131 +1,118 @@
-"""Compose source decoding, compiled geometry and sequential optimization."""
-from dataclasses import asdict
+"""Compose source preparation and optimization; return reusable in-memory results."""
+from dataclasses import asdict, dataclass
 from pathlib import Path
-import json
 from time import perf_counter
 
 import numpy as np
-import mujoco
-from scipy.spatial.transform import Rotation
 
-from .config import legacy_preset
+from .config import RobotConfig, load_preset
 from .graph import EdgeSpace
 from .kinematics import Robot
-from .motion import read_bvh, prepare_source
+from .motion import Motion, read_bvh, prepare_source
 from .solver import Retargeter, Settings
 from .normalization import DEFAULT_MIN_EDGE_RATIO, skeleton_height, validate_ratio
-from .ground import foot_support_meshes
 from .source_ground import calibrate_source_ground
-
-SOURCE_LANDMARKS = ['pelvis', 'left_knee', 'left_ankle', 'left_foot',
-                    'right_knee', 'right_ankle', 'right_foot', 'spine3',
-                    'left_shoulder', 'left_elbow', 'left_middle1', 'left_thumb2',
-                    'right_shoulder', 'right_elbow', 'right_middle1', 'right_thumb2']
+from .trajectory import Trajectory
 
 
-def prepare(project, motion_path, pose='stand', robot_file='UnitreeG1.py',
-            frame_slice=slice(None), config=None, normalize=True, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, clamp_source_ground=True, foot_surfaces=True,
-            source_ground_calibration=True, source_ground_height=None, source_ground_quantile=.05):
+@dataclass
+class PreparedMotion:
+    robot: Robot
+    edges: EdgeSpace
+    scales: np.ndarray
+    source_vectors: np.ndarray
+    motion: Motion
+    horizontal_ratio: float
+    initial: np.ndarray
+    posture_reference: np.ndarray
+    normalization: dict
+    urdf: Path
+    preparation_seconds: float
+
+
+@dataclass
+class RetargetResult:
+    prepared: PreparedMotion
+    trajectory: Trajectory
+    report: dict
+
+
+def prepare(asset_root, motion_path, *, robot='g1', frame_slice=slice(None),
+            config: RobotConfig | None = None, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO) -> PreparedMotion:
+    start = perf_counter()
     validate_ratio(min_edge_ratio)
-    project = Path(project)
-    preset = legacy_preset(project, robot_file, pose) if config is None else config
-    keys = preset['key_joints']
-    ground = 'ground' in keys
-    if ground and keys[-1] != 'ground':
-        raise ValueError('Ground must be the final landmark')
-    landmarks = keys[:-1] if ground else keys
-    robot = Robot(preset['urdf'], landmarks)
-    edges = EdgeSpace(len(landmarks), ground, preset.get('edges'))
-    qrest = robot.coordinates(preset['norm_pose_in_rad'])
-    robot.rest_coordinates = qrest.copy()
-    rest_p = robot.evaluate(qrest, jacobian=False)
-    toe_ids = [mujoco.mj_name2id(robot.model, mujoco.mjtObj.mjOBJ_BODY, n) for n in preset['toes']]
-    if any(i < 0 for i in toe_ids):
-        raise ValueError('Missing toe bodies in URDF')
-    toe_positions = robot.data.xpos[toe_ids].copy()
-    toe_rotations = robot.data.xmat[toe_ids].reshape(-1,3,3).copy()
-    robot.foot_bodies = toe_ids
-    robot.foot_up_axes = np.swapaxes(toe_rotations,-1,-2) @ np.array([0.,0.,1.])
+    preset = load_preset(asset_root, robot) if config is None else config
+    robot = Robot(preset.urdf, preset.target_landmarks)
+    edges = EdgeSpace(len(preset.landmark_pairs), preset.include_ground, preset.edges)
+    qnorm = robot.coordinates(preset.normalization_pose)
+    qinitial = robot.coordinates(preset.initial_pose)
+    posture_reference = robot.coordinates(preset.posture_pose)
+    rest_p = robot.evaluate(qnorm, jacobian=False)
+    toe_positions = robot.body_positions(qnorm, preset.toes)
     root_height = -1.05 * toe_positions[:, 2].min()
-    target_height = skeleton_height(robot.data.xpos[1:], toe_positions)
+    target_height = skeleton_height(robot.body_positions(qnorm), toe_positions)
     scales = edges.scales(rest_p, root_height, min_edge_ratio=min_edge_ratio,
-                          body_height=target_height) if normalize else np.ones(len(edges.pairs))
-    default_source = (SOURCE_LANDMARKS if len(landmarks) == 16 else
-                      [n for n in SOURCE_LANDMARKS if n not in ('left_thumb2', 'right_thumb2')])
-    source = preset.get('source_landmarks', default_source)
-    if len(source) != len(landmarks):
-        raise ValueError('Source and target semantic landmark counts differ')
+                          body_height=target_height)
     motion = read_bvh(motion_path)
-    rest_path = preset.get('source_rest', project / f'mahr/rsc/amass_bvh/norm_pose/norm_pose_{pose}.bvh')
-    rest = read_bvh(rest_path, slice(0, 1))
-    source_toes = preset.get('source_toes', ['left_foot', 'right_foot'])
-    motion, ground_calibration = calibrate_source_ground(
-        motion, source_toes, enabled=source_ground_calibration,
-        height=source_ground_height, quantile=source_ground_quantile)
-    stride = frame_slice.step or 1
+    rest = read_bvh(preset.source_rest, slice(0, 1))
+    motion, ground_calibration = calibrate_source_ground(motion, preset.source_toes)
+    stride = frame_slice.step if frame_slice.step is not None else 1
     if stride < 1:
         raise ValueError('Frame stride must be positive')
-    motion = type(motion)(motion.names, motion.positions[frame_slice],
-                          motion.root_rotations[frame_slice], motion.fps/stride)
+    motion = Motion(motion.names, motion.positions[frame_slice],
+                    motion.root_rotations[frame_slice], motion.fps / stride)
     if not len(motion.positions):
         raise ValueError('No frames selected')
-    source_height = skeleton_height(rest.positions[0], rest.positions[0, [rest.names.index(n) for n in source_toes]])
-    vectors, foot_distance = prepare_source(motion, rest, source,
-                                            source_toes, edges, normalize,
-                                            min_edge_ratio=min_edge_ratio, body_height=source_height,
-                                            clamp_source_ground=clamp_source_ground)
+    source_height = skeleton_height(
+        rest.positions[0], rest.positions[0, [rest.names.index(n) for n in preset.source_toes]])
+    vectors, foot_distance = prepare_source(
+        motion, rest, preset.source_landmarks, preset.source_toes, edges,
+        min_edge_ratio=min_edge_ratio, body_height=source_height)
     ratio = np.linalg.norm(toe_positions[0, :2] - toe_positions[1, :2]) / foot_distance
-    if foot_surfaces:
-        robot.ground_meshes = foot_support_meshes(robot, preset['urdf'], preset['toes'])
-    edges.normalization = dict(enabled=normalize, min_edge_ratio=min_edge_ratio,
-        height_definition="rest joint/body origins: maximum z minus minimum toe z",
+    normalization = dict(
+        min_edge_ratio=min_edge_ratio,
+        height_definition='rest joint/body origins: maximum z minus minimum toe z',
         source_height=source_height, target_height=target_height,
-        clamp_source_ground=clamp_source_ground, source_ground=ground_calibration, collision_sphere_count=len(robot.ground_spheres),
-        foot_surface_vertex_count=sum(len(v) for _,v in robot.ground_meshes),
-        source_denominator_floor=min_edge_ratio*source_height if normalize else None,
-        target_denominator_floor=min_edge_ratio*target_height if normalize else None,
-        target_min_denominator=float(scales.min()) if normalize else None)
-    if len(source_toes) != len(toe_ids):
-        raise ValueError("Source and robot foot mapping counts differ")
-    edges.normalization["foot_support"] = dict(source="positions_only",
-        clearance_band_height_ratio=.05, up_cosine_margin=.3,
-        source_foot_rotations_used=False)
-    ids = [motion.names.index(n) for n in source_toes]
-    # Position-only support confidence; source joint rotations are never used here.
-    clearance = np.maximum(motion.positions[:, ids, 2], 0.) / source_height
-    edges.foot_support_confidence = np.exp(-(clearance/.05)**2)
-    initial = np.r_[qrest, root_height]
-    return robot, edges, scales, vectors, motion, ratio, initial
+        source_ground=ground_calibration,
+        source_denominator_floor=min_edge_ratio * source_height,
+        target_denominator_floor=min_edge_ratio * target_height,
+        target_min_denominator=float(scales.min()))
+    return PreparedMotion(
+        robot=robot, edges=edges, scales=scales, source_vectors=vectors, motion=motion,
+        horizontal_ratio=ratio, initial=np.r_[qinitial, root_height],
+        posture_reference=posture_reference, normalization=normalization, urdf=preset.urdf,
+        preparation_seconds=perf_counter() - start)
 
 
-def run(project, motion_path, output, *, settings=None, analytic=True, **kwargs):
+def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetResult:
+    """Solve already prepared data, reusable for validation or parameter comparisons."""
     start = perf_counter()
-    robot, edges, scales, vectors, motion, ratio, initial = prepare(project, motion_path, **kwargs)
-    prepared = perf_counter()
-    trajectory, stats = Retargeter(robot, edges, scales, settings).solve(
-        vectors, motion.root_rotations, initial, analytic=analytic, frame_dt=1/motion.fps,
-        foot_support=edges.foot_support_confidence)
-    solved = perf_counter()
-    root_positions = motion.positions[:, 0].copy()
-    root_positions[:, :2] *= ratio
-    root_positions[:, 2] = trajectory[:, -1]
-    quats = Rotation.from_matrix(motion.root_rotations).as_quat()
-    result = dict(fps=motion.fps, joint_names=robot.names, trajectory=[
-        dict(RootPos=p.tolist(), RootOrient=q.tolist(), JointPos=dict(zip(robot.names, x[:-1].tolist())))
-        for p, q, x in zip(root_positions, quats, trajectory)])
-    output = Path(output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(result, separators=(',', ':'), allow_nan=False))
-    delta = np.diff(trajectory[:, :-1], axis=0)
-    second = np.diff(trajectory[:, :-1], n=2, axis=0)
-    report = dict(settings=asdict(settings or Settings()), normalization=edges.normalization,
-                  max_joint_step=float(np.max(np.abs(delta))) if len(delta) else 0.,
-                  max_joint_velocity=float(np.max(np.abs(delta))*motion.fps) if len(delta) else 0.,
-                  max_joint_acceleration=float(np.max(np.abs(second))*motion.fps**2) if len(second) else 0.,
-                  frames=len(stats), preparation_seconds=prepared-start,
-                  solve_seconds=solved-prepared, total_seconds=perf_counter()-start,
-                  fps=len(stats)/(solved-prepared),
-                  mean_graph_loss=float(np.mean([s['graph_loss'] for s in stats])), mean_loss=float(np.mean([s['loss'] for s in stats])),
-                  unsuccessful_frames=sum(not s['success'] for s in stats), frames_detail=stats)
-    output.with_suffix('.stats.json').write_text(json.dumps(report, indent=2, allow_nan=False))
-    return report
+    settings = settings or Settings()
+    motion = data.motion
+    coordinates, stats = Retargeter(
+        data.robot, data.edges, data.scales, settings, posture_reference=data.posture_reference
+    ).solve(data.source_vectors, motion.root_rotations, data.initial, frame_dt=1 / motion.fps)
+    solve_seconds = perf_counter() - start
+    trajectory = Trajectory.from_solution(data.robot.names, coordinates, motion, data.horizontal_ratio)
+    delta = np.diff(trajectory.joint_positions, axis=0)
+    second = np.diff(trajectory.joint_positions, n=2, axis=0)
+    report = dict(
+        settings=asdict(settings), normalization=data.normalization,
+        max_joint_step=float(np.max(np.abs(delta))) if len(delta) else 0.,
+        max_joint_velocity=float(np.max(np.abs(delta)) * motion.fps) if len(delta) else 0.,
+        max_joint_acceleration=float(np.max(np.abs(second)) * motion.fps**2) if len(second) else 0.,
+        frames=len(stats), preparation_seconds=data.preparation_seconds,
+        solve_seconds=solve_seconds, total_seconds=data.preparation_seconds + perf_counter() - start,
+        fps=len(stats) / solve_seconds,
+        mean_graph_loss=float(np.mean([s['graph_loss'] for s in stats])),
+        mean_loss=float(np.mean([s['loss'] for s in stats])),
+        unsuccessful_frames=sum(not s['success'] for s in stats), frames_detail=stats)
+    return RetargetResult(data, trajectory, report)
+
+
+def run(asset_root, motion_path, *, settings: Settings | None = None, robot='g1',
+        frame_slice=slice(None), config: RobotConfig | None = None,
+        min_edge_ratio=DEFAULT_MIN_EDGE_RATIO) -> RetargetResult:
+    data = prepare(asset_root, motion_path, robot=robot, frame_slice=frame_slice,
+                   config=config, min_edge_ratio=min_edge_ratio)
+    return solve(data, settings)
