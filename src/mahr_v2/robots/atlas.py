@@ -1,0 +1,62 @@
+"""AtlasHDConfig: stand reference and semantic landmark mapping."""
+from ..config import RobotConfig
+
+
+class AtlasHDConfig(RobotConfig):
+    urdf_path = 'robots/Boston_Dynamics_Atlas/urdf/atlas_v4_with_multisense_stl.urdf'
+
+    # (source joint, target body), in graph vertex order.
+    landmark_pairs = (
+        ('pelvis', 'pelvis_marker'),
+        ('left_knee', 'left_knee_marker'),
+        ('left_ankle', 'left_ankle_marker'),
+        ('left_foot', 'left_toe_marker'),
+        ('right_knee', 'right_knee_marker'),
+        ('right_ankle', 'right_ankle_marker'),
+        ('right_foot', 'right_toe_marker'),
+        ('spine3', 'head_marker'),
+        ('left_shoulder', 'left_shoulder_marker'),
+        ('left_elbow', 'left_elbow_marker'),
+        ('left_middle1', 'left_hand_marker'),
+        ('right_shoulder', 'right_shoulder_marker'),
+        ('right_elbow', 'right_elbow_marker'),
+        ('right_middle1', 'right_hand_marker'),
+    )
+
+    toes = (
+        'left_toe_marker',
+        'right_toe_marker',
+    )
+
+    # Joint coordinates in radians, in the robot's URDF convention.
+    normalization_pose = {
+        'back_bkx': 0.0,
+        'back_bky': 0.0,
+        'back_bkz': 0.0,
+        'l_arm_elx': 0.0,
+        'l_arm_ely': 0.0,
+        'l_arm_shx': -1.57,
+        'l_arm_shz': 0.0,
+        'l_arm_wrx': 0.0,
+        'l_arm_wry': 0.0,
+        'l_arm_wry2': 0.0,
+        'l_leg_akx': 0.0,
+        'l_leg_aky': 0.0,
+        'l_leg_hpx': 0.0,
+        'l_leg_hpy': 0.0,
+        'l_leg_hpz': 0.0,
+        'l_leg_kny': 0.0,
+        'r_arm_elx': 0.0,
+        'r_arm_ely': 0.0,
+        'r_arm_shx': 1.57,
+        'r_arm_shz': 0.0,
+        'r_arm_wrx': 0.0,
+        'r_arm_wry': 0.0,
+        'r_arm_wry2': 0.0,
+        'r_leg_akx': 0.0,
+        'r_leg_aky': 0.0,
+        'r_leg_hpx': 0.0,
+        'r_leg_hpy': 0.0,
+        'r_leg_hpz': 0.0,
+        'r_leg_kny': 0.0,
+    }
