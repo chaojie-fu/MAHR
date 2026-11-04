@@ -48,10 +48,12 @@ working conventions here.
 
 ## Dependencies and Assets
 
-The runtime depends on NumPy, SciPy, and MuJoCo. Bundled resources live in `assets/`:
+The runtime depends on NumPy, SciPy, MuJoCo, and Pillow (PNG height-map loading).
+Bundled resources live in `assets/`:
 `robots/` contains the eight configured URDFs, their referenced meshes, and available
 model-specific license files; `motions/` contains the two reproduction clips and standing
-reference pose. Preserve model-relative mesh paths and license notices when updating
+reference pose; `terrains/ramp.png` is a generated 33-by-65 grayscale ramp for terrain
+reproduction (pixel value `2 * column + 3 * row`). Preserve model-relative mesh paths and license notices when updating
 assets. Optimization loads no visual or collision meshes; rendering loads the visual assets.
 
 `DEFAULT_ASSET_ROOT` in `config.py` resolves `assets/` relative to this checkout, independently
@@ -90,12 +92,16 @@ computation separate from file export.
 | `robots/` | Eight robot configuration classes and the `PRESETS` registry |
 | `motion.py` | BVH parsing, coordinate conversion, and source graph vectors |
 | `source_ground.py` | Static ground calibration over the complete input motion |
+| `terrain.py` | Target height fields, world coordinates, height derivatives, and portable data export |
+| `terrain_cli.py` | Shared terrain arguments for retargeting entry points |
+| `rendering.py` | Flat ground or matching MuJoCo height-field scene geometry |
 | `normalization.py` | Skeleton-height estimation and edge denominator floors |
 | `kinematics.py` | Mesh-free MuJoCo FK, body origins, and landmark Jacobians |
 | `graph.py` | Graph topology, ground-height relations, proximity weights, and edge derivatives |
 | `objective.py` | Losses, analytic gradients, and a shared `LossBreakdown` |
 | `solver.py` | `Settings`, sequential state, dynamic bounds, and L-BFGS-B calls |
 | `pipeline.py` | Preparation, solving, result composition, and aggregate statistics |
+| `batch.py` | Motion discovery, sequential task execution, output paths, and failure manifests |
 | `trajectory.py` | In-memory trajectories, output format, and explicit export |
 | `cli.py` | Command-line arguments and execution entry point |
 
@@ -191,7 +197,7 @@ clipped regularization, temporal terms, and the posture prior.
 | First-order temporal term | Weight `0.02`, scaled by `((1/120) / dt)^2` |
 | Second-order temporal term | Weight `0.1`, scaled by `((1/120) / dt)^4` |
 | Joint bounds | URDF limits; unbounded scalar joints retain `[-π, π]` |
-| Root-height bounds | `[0, 4]` meters |
+| Flat-ground root-height bounds | `[0, 4]` meters |
 | Inter-frame bounds | Intersection of the `50/120` step limit and velocity limits |
 | Joint velocity limit | `8 rad/s` |
 | Root-height velocity limit | `2 m/s` |
@@ -206,6 +212,79 @@ matching, and multi-start experiments have been removed from the default pipelin
 The user considers source foot rotations potentially unreliable; do not reintroduce
 them as targets. Graph ground-height matching remains active and is distinct from the
 removed additional ground penalties.
+
+### Target Terrain
+
+`HeightMap` is the Python configuration and data object accepted by `prepare`, `run`,
+and `run_batch` through `terrain=`. Omission keeps the flat-ground arithmetic and
+default trajectories unchanged. PNG input uses 8-bit grayscale samples; the numerical
+API also accepts arbitrary finite height arrays in meters, including negative heights.
+The map center XY and base Z are configurable independently of its half extents.
+
+- Query terrain at each ground-edge landmark's world XY, including the scaled root
+  translation and root rotation. A target ground edge is still vertical:
+  `height_map(world_x, world_y) - landmark_world_z`.
+- Use continuous piecewise planar interpolation with the same cell diagonal as MuJoCo
+  height fields. In image coordinates, the first triangle has `u + v <= 1`.
+  This avoids staircase sampling and provides analytic slopes within each triangle.
+  Derivatives can change at triangle boundaries; use points away from those boundaries
+  for finite-difference checks. Clamp out-of-map queries and zero the derivative along
+  each clamped coordinate. The rendered height field covers only the configured footprint.
+- Add `dh/dx * dx/dq + dh/dy * dy/dq` to each ground-edge joint derivative. Do not treat
+  sampled terrain heights as constants during optimization. Root XY and rotation remain
+  prescribed by the source; only joint angles and root height are optimized.
+- Keep source calibration and reference edge denominators on horizontal ground. The
+  target terrain changes the target graph, not skeleton normalization or source vectors.
+- Initialize root height above the first root XY's terrain sample. Root bounds are
+  `[ground_at_root, ground_at_root + 4]`; the root component of clipped regularization
+  uses height above that sample. Temporal terms and velocity bounds use world heights.
+  Report an error if terrain bounds and inter-frame velocity bounds have no intersection.
+- Export the sampled map, half extents, and origin to a compressed `.terrain.npz` sidecar.
+  The trajectory JSON's optional `terrain` field is the sidecar basename. Playback reads
+  that file relative to the trajectory, preserving the map after moving results. Missing
+  or invalid maps must fail explicitly rather than silently render or solve flat ground.
+
+Terrain support does not add penetration, contact, foot orientation, or balance penalties.
+Validate both analytic gradients and MuJoCo ray heights on asymmetric non-square maps;
+matching only PNG dimensions does not establish coordinate or interpolation consistency.
+MuJoCo normalizes nonconstant height-field samples to `[0, 1]`. Preserve their actual
+height span, including submillimeter spans; use a positive fallback size only for a
+completely constant field, whose normalized samples remain zero.
+
+### Multi-Motion Batches
+
+`run_batch` owns file output and calls the in-memory pipeline one task at a time. Avoid
+holding all solved trajectories in memory. Load a requested height map once and share
+the read-only data across tasks. Each solve still owns its own kinematic workspace.
+
+Directory discovery is recursive and sorted, accepts case-insensitive BVH suffixes, and
+excludes relative path components beginning with `norm_pose`. An explicitly selected
+file bypasses that exclusion. Preserve each motion's relative path under its robot's
+output directory. Preflight collisions across trajectories, statistics, and terrain
+sidecars before writing any task outputs.
+
+`--robot` remains a single-value option and can be repeated; `--robot all` expands the
+preset registry. A single file and single robot retain the JSON output interface.
+Directory inputs or multiple robots use batch output directories. Task statuses distinguish `succeeded`,
+`unconverged` (export retained), and `failed` (exception recorded). Continue after task
+exceptions, but do not swallow process interrupts. The CLI exits nonzero for failed or
+unconverged tasks. Progress records are not a resume/cache mechanism.
+
+- Each output directory has one batch writer. Only that writer updates batch records;
+  rendering reads them without modifying solve metadata or recording a fixed render stride.
+- Start `batch_progress.jsonl` by atomically replacing any previous journal with one
+  metadata line: the initial summary with zero counters and an empty task list. Append
+  and flush one JSON task record per completed task. Keep total serialization and writes
+  linear in task count; do not rewrite all prior tasks after each completion.
+- Atomically write `batch_summary.json` at startup and in `finally` on completion or
+  catchable interruption. It retains the existing summary schema and return value.
+  A forced termination can leave this snapshot incomplete; flushed journal records
+  remain readable without requiring another full summary write.
+- `load_batch_summary(directory)` reads metadata and completed tasks from one journal
+  handle, ignoring an incomplete final line but rejecting malformed complete records.
+  Never combine a journal with metadata from a separate snapshot: restarting a batch
+  could otherwise mix runs. Fall back to `batch_summary.json` for existing outputs
+  without a journal. A batch renderer processes the records visible when it loads them.
 
 ### Performance and State Ownership
 
@@ -235,6 +314,15 @@ Rendering samples every fourth frame by default and adjusts playback FPS to pres
 motion speed. It performs kinematic playback without dynamics or trajectory smoothing.
 Dark-material enhancement for H1 and GR1 affects display only.
 
+For bandwidth-limited previews, `render_motion.py --fps` selects the nearest source
+frame at each output timestamp; it does not interpolate or smooth the trajectory.
+The frame count is `ceil(source_frames * output_fps / source_fps)`, so duration is
+rounded up by less than one output frame. `--fps` and `--stride` are mutually exclusive.
+`--bitrate` is in kbit/s and sets H.264 target/max rate with a two-second VBV buffer;
+omission preserves CRF 20. Use even output dimensions for yuv420p and `+faststart`
+for progressive MP4 playback. Verify exact frame rate, duration, file size, and bitrate
+using FFprobe. Optional ground grids and camera distance affect presentation only.
+
 ## Validation and Recorded Results
 
 From the repository root, in the environment documented in README:
@@ -248,7 +336,11 @@ git diff --check
 The tests cover FK and objective gradients, loss decomposition, buffer reuse,
 configuration and pose isolation, in-memory results and export, temporal velocity bounds,
 normalization, source ground calibration, and independence from source foot-rotation
-channels, and the completeness of bundled model assets. Run checks appropriate to the change.
+channels, the completeness of bundled model assets, terrain gradients and rendered
+surfaces (including submillimeter spans), portable terrain export, batch discovery,
+task failure isolation, live and interrupted batch records, linear serialization volume,
+and rendering without overwriting concurrent batch progress.
+Run checks appropriate to the change.
 For documentation changes, verify links,
 arguments, and executable examples.
 
@@ -268,6 +360,31 @@ new directory to avoid overwriting the baseline.
 
 Local validation recorded on 2026-11-04:
 
+- Batch record ownership, incremental progress, and small terrain spans passed all
+  34 tests. With solving and file I/O mocked, 500 and 1000 tasks serialized 0.238 MB
+  and 0.475 MB respectively, including the journal and snapshots; the preceding
+  full-rewrite implementation serialized 33.510 MB and 133.771 MB for the same records.
+  These are record-volume checks, not end-to-end retargeting timings.
+  G1 and X1 each retargeted eight frames with a submillimeter ramp and exported
+  320-by-240 videos. FFprobe and complete decoding passed; both batch record files
+  retained identical hashes across rendering. Records are in `review_fixes_smoke`.
+- Terrain and multi-motion batch support passed 29 tests using the validated core
+  environment and Pillow 12.2.0. Editable installation through uv and the installed CLI
+  also passed, including execution outside the repository and frame subsampling.
+- `terrain_flat_dance` and `terrain_flat_smpl` matched `python_config_dance` and
+  `python_config_smpl` exactly across 6552 frames, with no unconverged frames.
+- `terrain_motion_batch` processed both complete motions on all eight robots using
+  `assets/terrains/ramp.png`, half extents `(4, 4)`, and elevation `0.4`. All 16 tasks
+  and 6552 frames converged; joint and world-velocity bounds passed. Finite differences
+  at the first, middle, and last frames had a maximum gradient error of `3.15e-9`.
+  All 16 terrain videos passed FFprobe checks for dimensions, frame counts, and source
+  playback speed. Records are in that directory's `validation.json` and
+  `render_validation.json`.
+- With one warmup and seven alternating X1 Dance solves, flat-ground median time was
+  1.558 s before terrain support and 1.566 s after it (about 0.5% difference), with
+  identical trajectories and no unconverged frames. Video export ran concurrently;
+  treat these timings as a local regression check. Raw timings are in
+  `results/terrain_flat_performance.json`.
 - `structured_api_dance` and `structured_api_smpl`, compared with `python_config_dance`
   and `python_config_smpl`, had a maximum difference of zero across all joints, root
   positions, and root quaternions. All frames converged; bounds, velocity, and analytic
