@@ -1,5 +1,6 @@
 """Compiled edge indices. Ground is a height relation, never a spatial point."""
 import numpy as np
+from .normalization import DEFAULT_MIN_EDGE_RATIO, edge_denominators, skeleton_height
 
 
 class EdgeSpace:
@@ -36,10 +37,11 @@ class EdgeSpace:
         d[g, 2, -1] = -1.
         return d
 
-    def scales(self, positions, height, source=False):
+    def scales(self, positions, height, source=False, *, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, body_height=None):
         lengths = np.linalg.norm(self.vectors(positions, np.eye(3), height), axis=1)
-        # The legacy source adds epsilon; target divides only strictly positive lengths.
-        return lengths + 1e-5 if source else np.where(lengths > 0., lengths, 1.)
+        if body_height is None and min_edge_ratio > 0:
+            body_height = skeleton_height(positions)
+        return edge_denominators(lengths, body_height, min_edge_ratio, source=source)
 
 
 def proximity_weights(source_vectors, weighted=True):

@@ -29,7 +29,7 @@ def main():
     path=project/'mahr/rsc/amass_bvh/DanceDB_SMPLHG/Clio_Haniotikos_C3D_poses_short.bvh'
     report={}
     for pose in ('stand','t_pose'):
-        r,e,s,v,m,ratio,x=prepare(project,path,pose=pose,frame_slice=slice(0,5))
+        r,e,s,v,m,ratio,x=prepare(project,path,pose=pose,frame_slice=slice(0,5), min_edge_ratio=0, clamp_source_ground=False, foot_surfaces=False, source_ground_calibration=False)
         preset=legacy_preset(project,pose=pose)
         old_robot=URDF.load(preset['urdf'])
         config=SimpleNamespace(robot=old_robot,key_joints=preset['key_joints'],toes=preset['toes'],norm_pose_in_rad=preset['norm_pose_in_rad'])

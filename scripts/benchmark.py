@@ -27,11 +27,12 @@ def main():
     parser.add_argument('--output', type=Path, default=Path('results/benchmark.json'))
     args = parser.parse_args()
     p = args.project / 'mahr/rsc/amass_bvh/DanceDB_SMPLHG/Clio_Haniotikos_C3D_poses_short.bvh'
-    robot, edges, scales, source, motion, _, initial = prepare(args.project, p, frame_slice=slice(0,args.frames))
+    robot, edges, scales, source, motion, _, initial = prepare(args.project, p, frame_slice=slice(0,args.frames), min_edge_ratio=0, clamp_source_ground=False, foot_surfaces=False, source_ground_calibration=False)
     reports = {}
+    settings = Settings(posture_weight=0.,foot_support_weight=0.,ground_weight=0, temporal_weight=0, acceleration_weight=0, max_joint_velocity=None, max_root_velocity=None)
     for label, analytic in [('analytic',True), ('array_numerical',False)]:
         start = perf_counter()
-        trajectory, stats = Retargeter(robot,edges,scales).solve(source,motion.root_rotations,initial,analytic)
+        trajectory, stats = Retargeter(robot,edges,scales,settings).solve(source,motion.root_rotations,initial,analytic)
         reports[label] = dict(seconds=perf_counter()-start, evaluations=sum(s['evaluations'] for s in stats),
                               mean_loss=float(np.mean([s['loss'] for s in stats])),
                               unsuccessful_frames=sum(not s['success'] for s in stats),
@@ -78,7 +79,7 @@ def main():
         scipy=scipy.__version__, mujoco=mujoco.__version__, platform=platform.platform()), frames=len(source),robot='Unitree G1',motion=p.name,
         first_frame='local optimization from rest pose in all arms; legacy global initialization excluded',
         timing='optimization only; decoding/model loading excluded',
-        settings=Settings().__dict__)
+        settings=settings.__dict__)
     for key in ('array_numerical','legacy_graph_local_init'):
         if key in reports:
             reports[key]['speedup_vs_analytic']=reports[key]['seconds']/reports['analytic']['seconds']
