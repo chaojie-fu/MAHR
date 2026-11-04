@@ -19,21 +19,24 @@ class EdgeSpace:
         self.a, self.b = self.pairs.T
         self.ground = self.b == count
         self.safe_b = np.minimum(self.b, count - 1)
+        self.ground_indices = np.flatnonzero(self.ground)
+        self.ground_sources = self.a[self.ground_indices]
 
-    def vectors(self, positions, rotation, height):
+    def vectors(self, positions, rotation, height, *, out=None):
         """Positions in root frame; rotation maps root to world. Flat ground z=0."""
-        v = positions[self.safe_b] - positions[self.a]
-        g = self.ground
+        v = np.subtract(positions[self.safe_b], positions[self.a], out=out)
+        g = self.ground_indices
         v[g] = 0.
-        v[g, 2] = -(positions[self.a[g]] @ rotation[2] + height)
+        v[g, 2] = -(positions[self.ground_sources] @ rotation[2] + height)
         return v
 
-    def derivatives(self, landmark_jac, rotation):
-        d = np.zeros((len(self.pairs), 3, landmark_jac.shape[-1] + 1))
-        d[:, :, :-1] = landmark_jac[self.safe_b] - landmark_jac[self.a]
-        g = self.ground
+    def derivatives(self, landmark_jac, rotation, *, out=None):
+        d = np.empty((len(self.pairs), 3, landmark_jac.shape[-1] + 1)) if out is None else out
+        np.subtract(landmark_jac[self.safe_b], landmark_jac[self.a], out=d[:, :, :-1])
+        d[:, :, -1] = 0.
+        g = self.ground_indices
         d[g] = 0.
-        d[g, 2, :-1] = -np.einsum('j,ejd->ed', rotation[2], landmark_jac[self.a[g]])
+        d[g, 2, :-1] = -np.einsum('j,ejd->ed', rotation[2], landmark_jac[self.ground_sources])
         d[g, 2, -1] = -1.
         return d
 

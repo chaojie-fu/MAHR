@@ -51,8 +51,7 @@ class Robot:
         limited = self.model.jnt_limited.astype(bool)
         self.lower = np.where(limited, self.model.jnt_range[:, 0], -np.pi)
         self.upper = np.where(limited, self.model.jnt_range[:, 1], np.pi)
-        self._jacp = np.empty((3, self.model.nv))
-        self._jacr = np.empty_like(self._jacp)
+        self._jacobian_bodies = tuple(int(i) for i in self.body_ids)
 
     @property
     def dofs(self):
@@ -78,12 +77,12 @@ class Robot:
     def evaluate(self, q, jacobian=True):
         self.data.qpos[:] = q
         mujoco.mj_kinematics(self.model, self.data)
-        positions = self.data.xpos[self.body_ids].copy()
+        positions = self.data.xpos[self.body_ids]
         if not jacobian:
             return positions
         mujoco.mj_comPos(self.model, self.data)
         jac = np.empty((len(self.body_ids), 3, self.dofs))
-        for k, body in enumerate(self.body_ids):
-            mujoco.mj_jacBody(self.model, self.data, self._jacp, self._jacr, int(body))
-            jac[k] = self._jacp
+        for block, body in zip(jac, self._jacobian_bodies):
+            # Only translational derivatives enter the objective; write them directly.
+            mujoco.mj_jacBody(self.model, self.data, block, None, body)
         return positions, jac

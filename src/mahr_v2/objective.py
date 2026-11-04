@@ -20,7 +20,7 @@ class LossBreakdown(NamedTuple):
 
 
 class FrameObjective:
-    """Evaluate frame losses and independent gradients in one place."""
+    """Owns scratch arrays for one frame; returned gradients never alias them."""
 
     def __init__(self, robot, edges, scale, target, rotation, settings, *,
                  posture_reference, previous=None, older=None, frame_dt=REFERENCE_FRAME_DT):
@@ -33,6 +33,9 @@ class FrameObjective:
         self.temporal_weight = settings.temporal_weight * self.time_scale**2
         self.acceleration_weight = settings.acceleration_weight * self.time_scale**4
         self.calls = 0
+        self._error = np.empty_like(target)
+        self._weighted_error = np.empty_like(target)
+        self._edge_jacobian = np.empty((len(edges.pairs), 3, robot.dofs + 1))
 
     def temporal_terms(self, x):
         value, gradient = 0., np.zeros_like(x)
@@ -66,9 +69,10 @@ class FrameObjective:
             positions, jac = self.robot.evaluate(x[:-1])
         else:
             positions = self.robot.evaluate(x[:-1], jacobian=False)
-        raw = self.edges.vectors(positions, self.rotation, x[-1])
-        error = raw / self.scale[:, None] - self.target
-        weighted_error = self.weights[:, None] * error
+        error = self.edges.vectors(positions, self.rotation, x[-1], out=self._error)
+        error /= self.scale[:, None]
+        error -= self.target
+        weighted_error = np.multiply(self.weights[:, None], error, out=self._weighted_error)
         graph = np.sum(weighted_error * error)
         regularization, regularization_gradient = self.regularization_terms(x)
         temporal, temporal_gradient = self.temporal_terms(x)
@@ -76,7 +80,8 @@ class FrameObjective:
         losses = LossBreakdown(float(graph), float(regularization), float(temporal), float(posture))
         gradient = None
         if jacobian:
-            dv = self.edges.derivatives(jac, self.rotation) / self.scale[:, None, None]
+            dv = self.edges.derivatives(jac, self.rotation, out=self._edge_jacobian)
+            dv /= self.scale[:, None, None]
             gradient = 2 * np.einsum('ej,ejd->d', weighted_error, dv)
             gradient += regularization_gradient
             gradient = gradient + temporal_gradient + posture_gradient
