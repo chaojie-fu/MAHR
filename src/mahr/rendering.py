@@ -1,8 +1,32 @@
-"""Scene geometry for the same terrain used by the retargeting objective."""
+"""Terrain scene geometry and mesh animation in explicit coordinate frames."""
 import mujoco
 import numpy as np
 
 from .terrain import HeightMap
+
+
+def set_mesh_vertices(model, geom_id, vertices, normals):
+    """Update a dedicated mesh from vertices/normals in its attached body's frame.
+
+    MuJoCo compiles mesh vertices into a centered, rotated frame and compensates
+    with the geom transform. Preserve that transform (and its compiled same-frame
+    flags); convert animated data into the compiled frame instead. Call
+    ``mjr_uploadMesh`` afterwards when rendering with an existing GPU context.
+    """
+    if model.geom_type[geom_id] != mujoco.mjtGeom.mjGEOM_MESH:
+        raise ValueError('Expected a mesh geom')
+    mesh_id = int(model.geom_dataid[geom_id])
+    if np.shape(vertices) != (model.mesh_vertnum[mesh_id], 3):
+        raise ValueError('Vertex count must match the compiled mesh')
+    if np.shape(normals) != (model.mesh_normalnum[mesh_id], 3):
+        raise ValueError('Normal count must match the compiled mesh')
+    rotation = np.empty(9)
+    mujoco.mju_quat2Mat(rotation, model.geom_quat[geom_id])
+    rotation = rotation.reshape(3, 3)
+    start = int(model.mesh_vertadr[mesh_id])
+    model.mesh_vert[start:start + len(vertices)] = (vertices - model.geom_pos[geom_id]) @ rotation
+    start = int(model.mesh_normaladr[mesh_id])
+    model.mesh_normal[start:start + len(normals)] = normals @ rotation
 
 
 def add_ground(spec: mujoco.MjSpec, terrain: HeightMap | None = None, *, grid=False):

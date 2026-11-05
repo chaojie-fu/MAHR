@@ -96,7 +96,7 @@ computation separate from file export.
 | `source_ground.py` | Static ground calibration over the complete input motion |
 | `terrain.py` | Target height fields, world coordinates, height derivatives, and portable data export |
 | `terrain_cli.py` | Shared terrain arguments for retargeting entry points |
-| `rendering.py` | Flat ground or matching MuJoCo height-field scene geometry |
+| `rendering.py` | Terrain scene geometry and compiled-frame mesh updates |
 | `normalization.py` | Skeleton-height estimation and edge denominator floors |
 | `kinematics.py` | Mesh-free MuJoCo FK, body origins, and landmark Jacobians |
 | `graph.py` | Graph topology, ground-height relations, proximity weights, and edge derivatives |
@@ -369,6 +369,15 @@ quaternion convention when exporting.
 Rendering samples every fourth frame by default and adjusts playback FPS to preserve
 motion speed. It performs kinematic playback without dynamics or trajectory smoothing.
 Dark-material enhancement for H1 and GR1 affects display only.
+Animated source meshes must preserve MuJoCo's compiled geom and inertial transforms.
+Use `rendering.set_mesh_vertices` to convert body-frame vertices and normals into the
+compiled mesh frame, then upload the mesh. Do not reset `geom_pos`/`geom_quat` after
+compilation: `geom_sameframe` can still refer to the original inertial frame. This
+previously rotated the displayed CMU 85_03 source by approximately 89.75 degrees and
+offset it, despite correct pre-render SMPL-X joint positions. Validate final rendered
+world vertices and normals, not only the skinning output. Robot trajectories, source
+coordinate conversion, and optimization metrics were unaffected by this display bug.
+
 For bandwidth-limited previews, `render_motion.py --fps` selects the nearest source
 frame at each output timestamp; it does not interpolate or smooth the trajectory.
 The frame count is `ceil(source_frames * output_fps / source_fps)`, so duration is
