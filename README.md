@@ -9,7 +9,7 @@ based on *Morphology-Agnostic Humanoid Retargeting via Perceptual Motivated Grap
 Similarity*. It focuses on efficient processing of individual motions across robots
 with different body proportions and joint configurations.
 
-The project supports BVH input, eight robot models, height-map terrain, multi-motion
+The project supports BVH and SMPL-X input, eight robot models, height-map terrain, multi-motion
 batch processing, trajectory export, and video playback. Robot models, meshes,
 reference poses, an example height map, and two example motions are included
 in this repository. The commands below reproduce both motions on all supported robots
@@ -56,7 +56,7 @@ are only needed when exporting videos.
 
 ### Preparing Mocap Data
 
-The built-in mappings use AMASS/SMPL joint names and the Y-up BVH convention.
+The built-in mappings use AMASS/SMPL joint names. BVH input uses the Y-up convention.
 Two converted motions are included under `assets/motions/`:
 
 | Motion | BVH file | Frames |
@@ -66,8 +66,117 @@ Two converted motions are included under `assets/motions/`:
 
 For other motions, supply a BVH file with the same joint names, coordinate convention,
 and length units as the included examples. BVH files with a different skeleton require
-a corresponding mapping. AMASS NPZ and CMU ASF/AMC files require conversion to BVH
-before use; this repository does not include a converter for those formats.
+a corresponding mapping. SMPL-X NPZ motions can be loaded directly as described below.
+SMPL/SMPL-H parameter files and CMU ASF/AMC files require conversion or a separate
+input adapter; they are not interchangeable with SMPL-X parameters.
+
+#### SMPL-X motion data and body models
+
+Prepare two downloads: a **body model**, which defines the person's body shape and
+joints, and **motion data**, which supplies the poses over time. AMASS SMPL-X motions
+can be used directly after extraction. Use the uv environment from the installation
+section for the checks and commands below.
+
+##### 1. Download the SMPL-X body models
+
+Register and sign in on the [SMPL-X download page](https://smpl-x.is.tue.mpg.de/download.php),
+accept the applicable model terms, and download the SMPL-X models with the full shape
+and expression space. This workflow was validated with a full SMPL-X v1.1 model.
+Extract the archive and copy its neutral, female, and male model files into:
+
+```text
+assets/body_models/smplx/
+  SMPLX_NEUTRAL.npz
+  SMPLX_FEMALE.npz
+  SMPLX_MALE.npz
+```
+
+This directory is ignored by Git. Official model `.npz` files are preferred; trusted
+model `.pkl` files with the same names are also accepted. Use the full model when a
+motion has more than ten `betas`; a compact model with ten shape coefficients cannot represent those
+coefficients. Preserve the motion's shape coefficients instead of truncating them.
+
+You can keep them elsewhere and pass their directory or a specific model file through
+`--smplx-model`. A directory may contain the files directly or inside `smplx/`.
+The motion's `gender` selects the model; absent gender defaults to neutral. Use
+`--smplx-gender` only when intentionally overriding that selection, which changes the
+body model used to interpret the motion. MAHR reads these files with its existing
+dependencies; installing the `smplx` package or editing its source is unnecessary.
+
+##### 2. Download and extract AMASS SMPL-X motions
+
+Register and sign in on the [AMASS download page](https://amass.is.tue.mpg.de/download.php),
+accept the terms for the datasets you want, and select their **SMPL-X** downloads.
+For example, start with the DanceDB subset. The SMPL+H/SMPL-H downloads use a different
+parameter layout and cannot be passed to this loader or converted by padding poses
+with zeros.
+
+Extract each downloaded archive into a motion directory separate from the body models
+and output trajectories. For a tar archive, replacing both example paths:
+
+```bash
+mkdir -p /path/to/amass
+tar -xf /path/to/downloaded_amass_smplx_archive.tar.bz2 -C /path/to/amass
+```
+
+Keep the extracted dataset and subject directories. One DanceDB motion is
+`DanceDB/20120807_CliodelaVara/Clio_Haniotikos_C3D_stageii.npz`; adjust the input path
+to the actual extraction layout. The examples below use `/path/to/amass/clip_stageii.npz`
+as a placeholder for a selected motion file. Keep model files and unrelated NPZ files
+outside the motion directory, since batch mode treats NPZ files as motion inputs.
+
+##### 3. Check the input before retargeting
+
+Run this check with the downloaded models and one extracted motion:
+
+```bash
+python - /path/to/amass/clip_stageii.npz <<'PY'
+import sys
+from mahr import SMPLXSource
+
+source = SMPLXSource("assets/body_models/smplx")
+motion, _ = source.read(sys.argv[1])
+print(f"{len(motion.positions)} frames at {motion.fps:g} Hz; "
+      f"{len(motion.names)} joints; positions in {motion.units}")
+PY
+```
+
+A valid input reports 55 joints. Keep AMASS translations in meters, rotations in
+radians, and the recorded frame rate. MAHR uses AMASS Z-up coordinates by default
+and calibrates the source floor automatically. No BVH conversion, manual ground
+offset, or advance resampling is required. Continue with
+[Retargeting SMPL-X motions](#retargeting-smpl-x-motions) to produce robot trajectories.
+
+If loading fails, check that the model for the motion's gender exists, that you selected
+the SMPL-X dataset variant, and that the model supports all supplied shape coefficients.
+
+##### Parameters exported by other tools
+
+For another data source, export a NumPy `.npz` file with numeric parameter arrays and
+scalar metadata using the fields below. Raw `.pt` predictions and dataset
+pickle containers need to be converted to this layout before loading.
+
+| Parameter | Accepted fields and shape |
+| --- | --- |
+| Root translation, in meters | `trans` or `transl`: `[frames, 3]` |
+| Pose, in axis-angle radians | `poses`: `[frames, 165]`, or the separate fields below |
+| Root and body pose | `root_orient`/`global_orient`: `[frames, 3]`; `pose_body`/`body_pose`: `[frames, 63]` |
+| Shape | `betas`: `[coefficients]`, `[1, coefficients]`, or `[frames, coefficients]` |
+| Frame rate | Positive scalar `mocap_frame_rate`, `mocap_framerate`, or `fps` |
+
+Separate poses can also include `pose_hand` (`[frames, 90]`) or
+`left_hand_pose`/`right_hand_pose` (`[frames, 45]` each), plus jaw and eye rotations.
+Omitted hand and facial rotations are zero. Optional `expression` coefficients are
+supported. A full `poses` array takes precedence over separate fields and follows
+SMPL-X order: root (3), body (63), jaw (3), left eye (3), right eye (3), left hand (45),
+and right hand (45). All per-frame arrays must have the same frame count.
+
+Store `gender` as `neutral`, `female`, or `male`; if supplied, `surface_model_type` or
+`model_type` must be `smplx`. Hand poses use full axis angles; expand PCA hand
+coefficients using the exporting tool's matching body model first. Angles are absolute
+by default; use `--smplx-hand-mean model` for values relative to the model's hand mean.
+For Y-up motion files, pass `--smplx-up-axis y` (or `up_axis="y"` in Python).
+Preserve the producer's coordinate and hand conventions when preparing the arrays.
 
 ### Robot Models
 
@@ -106,9 +215,54 @@ The retargeted joint angles, root positions, root orientations, and frame rate a
 saved in `results/g1.json`. Solver statistics are saved in `results/g1.stats.json`.
 
 Replace `g1` with another name from the table to change the target robot, or replace
-the input path to process another compatible BVH file. Use `--frames 120` to select
+the input path to process another compatible motion. Use `--frames 120` to select
 the first 120 source frames and `--stride 2` to sample every second frame.
 Run `python -m mahr --help` for the available options.
+
+#### Retargeting SMPL-X motions
+
+After [preparing the models and motion data](#smpl-x-motion-data-and-body-models),
+try the first 120 source frames on G1:
+
+```bash
+python -m mahr /path/to/amass/clip_stageii.npz --robot g1 \
+  --smplx-model assets/body_models/smplx --frames 120 -o results/g1_smplx.json
+```
+
+The command writes `results/g1_smplx.json` and `results/g1_smplx.stats.json`.
+Remove `--frames 120` to process the complete clip. `--stride 2` keeps every second
+source frame and adjusts the output frame rate to preserve playback speed; it does
+not select a fixed output frequency.
+
+Render a small 30 Hz preview after installing the optional visualization dependencies:
+
+```bash
+MUJOCO_GL=osmesa python scripts/render_motion.py results/g1_smplx.json \
+  --urdf assets/robots/unitree_g1/g1_29dof_stl.urdf \
+  --fps 30 --width 320 --height 240 --bitrate 120 \
+  -o results/g1_smplx.mp4
+```
+
+To process the extracted motion directory on all eight robots:
+
+```bash
+python -m mahr /path/to/amass --robot all \
+  --smplx-model assets/body_models/smplx -o results/smplx_batch
+```
+
+Batch output preserves the dataset and subject directories beneath each robot's
+directory. Check `results/smplx_batch/batch_summary.json` for failed or unconverged
+tasks. SMPL-X input also accepts the terrain options described below.
+
+The Python API accepts a reusable source object:
+
+```python
+from mahr import SMPLXSource, run, save_result
+
+source = SMPLXSource("assets/body_models/smplx")
+result = run("assets", "/path/to/amass/clip_stageii.npz", robot="g1", smplx=source)
+save_result(result, "results/g1_smplx.json")
+```
 
 #### Retargeting on non-flat terrain
 
@@ -140,7 +294,7 @@ without needing the input PNG or additional terrain arguments.
 
 #### Processing multiple motions
 
-Supply a directory to recursively process its BVH motions. Select all robots with
+Supply a directory to recursively process its BVH and SMPL-X NPZ motions. Select all robots with
 `--robot all`, or repeat the option, for example `--robot g1 --robot x1`:
 
 ```bash
@@ -148,9 +302,10 @@ python -m mahr assets/motions --robot all -o results/motion_batch
 ```
 
 This command processes both included motions on eight robots. Files and directories
-whose names start with `norm_pose` are excluded from directory scans. Both `.bvh` and
-`.BVH` extensions are accepted. A single input file with multiple target robots also
-uses batch mode.
+whose names start with `norm_pose` and exported `.terrain.npz` files are excluded from
+directory scans. File extensions are case-insensitive. Supply `--smplx-model` when
+the directory includes SMPL-X motions; keep body-model files outside the motion
+directory. A single input file with multiple target robots also uses batch mode.
 
 In batch mode, `-o` is an output directory. Each robot gets a subdirectory that preserves
 the input motion's relative path, for example

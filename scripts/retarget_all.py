@@ -11,6 +11,7 @@ from mahr.objective import FrameObjective, CLIPPED_POSE_LIMIT
 from mahr.solver import Settings
 from mahr.trajectory import save_result
 from mahr.terrain_cli import add_terrain_arguments, terrain_from_arguments
+from mahr.source_cli import add_source_arguments, source_from_arguments
 
 
 def main():
@@ -21,9 +22,11 @@ def main():
     parser.add_argument('--output', type=Path, default=Path('results/all_robots'))
     parser.add_argument('--reference', type=Path, help='Compare complete trajectories against saved results')
     add_terrain_arguments(parser)
+    add_source_arguments(parser)
     args = parser.parse_args()
     try:
         terrain = terrain_from_arguments(args)
+        smplx = source_from_arguments(args)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     motion = args.motion or args.asset_root/'motions/DanceDB_SMPLHG/Clio_Haniotikos_C3D_poses_short.bvh'
@@ -32,7 +35,7 @@ def main():
     settings = Settings()
     for name in PRESETS:
         output = args.output/f'{name}.json'
-        result = run(args.asset_root, motion, robot=name, settings=settings, terrain=terrain)
+        result = run(args.asset_root, motion, robot=name, settings=settings, terrain=terrain, smplx=smplx)
         save_result(result, output)
         data, stats = result.prepared, result.report
         robot, clip = data.robot, data.motion

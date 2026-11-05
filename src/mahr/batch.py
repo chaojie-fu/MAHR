@@ -40,23 +40,24 @@ def load_batch_summary(directory):
 
 
 def discover_motions(path):
-    """Return a common root and sorted BVHs, excluding normalization poses in directories."""
+    """Return a common root and sorted motions, excluding reference poses and terrain sidecars."""
     path = Path(path)
     if path.is_file():
-        if path.suffix.lower() != '.bvh':
-            raise ValueError(f'Expected a BVH file: {path}')
+        if path.suffix.lower() not in ('.bvh', '.npz'):
+            raise ValueError(f'Expected a BVH or SMPL-X NPZ file: {path}')
         return path.parent, [path]
     if not path.is_dir():
         raise FileNotFoundError(f'Motion path does not exist: {path}')
-    motions = sorted(p for p in path.rglob('*') if p.is_file() and p.suffix.lower() == '.bvh'
+    motions = sorted(p for p in path.rglob('*') if p.is_file() and p.suffix.lower() in ('.bvh', '.npz')
+                     and not p.name.lower().endswith('.terrain.npz')
                      and not any(part.lower().startswith('norm_pose') for part in p.relative_to(path).parts))
     if not motions:
-        raise ValueError(f'No BVH motions found in {path}')
+        raise ValueError(f'No BVH or SMPL-X motions found in {path}')
     return path, motions
 
 
 def run_batch(asset_root, motion_path, output_dir, *, robots=('g1',), frame_slice=slice(None),
-              settings=None, terrain=None, progress=None):
+              settings=None, terrain=None, smplx=None, progress=None):
     """Write each trajectory and a manifest; continue after individual task failures.
 
     Outputs are <robot>/<relative motion stem>.json. A non-converged solve is saved
@@ -88,7 +89,7 @@ def run_batch(asset_root, motion_path, output_dir, *, robots=('g1',), frame_slic
                 item = dict(robot=name, motion=str(motion.relative_to(root)), trajectory=relative.as_posix())
                 try:
                     result = run(asset_root, motion, robot=name, frame_slice=frame_slice,
-                                 settings=settings, terrain=terrain)
+                                 settings=settings, terrain=terrain, smplx=smplx)
                     save_result(result, output_dir / relative)
                     status = 'unconverged' if result.report['unsuccessful_frames'] else 'succeeded'
                     item.update(status=status, frames=result.report['frames'],

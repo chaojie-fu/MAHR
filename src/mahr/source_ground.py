@@ -15,9 +15,9 @@ def calibrate_source_ground(motion, toes, *, quantile=.05):
     height=float(np.quantile(envelope,quantile))
     positions=motion.positions.copy()
     positions[:,:,2]-=height
-    calibrated=Motion(motion.names,positions,motion.root_rotations,motion.fps)
+    calibrated=Motion(motion.names,positions,motion.root_rotations,motion.fps,motion.units)
     return calibrated,dict(mode="auto",height_raw_units=height,
                            quantile=quantile,
                            estimated_from_frames=len(motion.positions),
-                           height_units='original BVH length units',
+                           height_units=motion.units,
                            applied_before_subsampling=True)

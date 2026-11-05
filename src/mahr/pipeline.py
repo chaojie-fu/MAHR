@@ -14,6 +14,7 @@ from .normalization import DEFAULT_MIN_EDGE_RATIO, skeleton_height, validate_rat
 from .source_ground import calibrate_source_ground
 from .trajectory import Trajectory
 from .terrain import HeightMap
+from .smplx import SMPLXSource
 
 
 @dataclass
@@ -41,7 +42,7 @@ class RetargetResult:
 
 def prepare(asset_root, motion_path, *, robot='g1', frame_slice=slice(None),
             config: RobotConfig | None = None, min_edge_ratio=DEFAULT_MIN_EDGE_RATIO,
-            terrain: HeightMap | None = None) -> PreparedMotion:
+            terrain: HeightMap | None = None, smplx: SMPLXSource | None = None) -> PreparedMotion:
     start = perf_counter()
     validate_ratio(min_edge_ratio)
     preset = load_preset(asset_root, robot) if config is None else config
@@ -58,14 +59,22 @@ def prepare(asset_root, motion_path, *, robot='g1', frame_slice=slice(None),
     target_height = skeleton_height(robot.body_positions(qnorm), toe_positions)
     scales = edges.scales(rest_p, root_height, min_edge_ratio=min_edge_ratio,
                           body_height=target_height)
-    motion = read_bvh(motion_path)
-    rest = read_bvh(preset.source_rest, slice(0, 1))
+    suffix = Path(motion_path).suffix.lower()
+    if suffix == '.bvh':
+        motion = read_bvh(motion_path)
+        rest = read_bvh(preset.source_rest, slice(0, 1))
+    elif suffix == '.npz':
+        if smplx is None:
+            raise ValueError('SMPL-X NPZ input requires SMPLXSource in Python or --smplx-model on the CLI')
+        motion, rest = smplx.read(motion_path)
+    else:
+        raise ValueError('Motion input must be BVH (.bvh) or SMPL-X (.npz)')
     motion, ground_calibration = calibrate_source_ground(motion, preset.source_toes)
     stride = frame_slice.step if frame_slice.step is not None else 1
     if stride < 1:
         raise ValueError('Frame stride must be positive')
     motion = Motion(motion.names, motion.positions[frame_slice],
-                    motion.root_rotations[frame_slice], motion.fps / stride)
+                    motion.root_rotations[frame_slice], motion.fps / stride, motion.units)
     if not len(motion.positions):
         raise ValueError('No frames selected')
     source_height = skeleton_height(
@@ -123,7 +132,8 @@ def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetRes
 
 def run(asset_root, motion_path, *, settings: Settings | None = None, robot='g1',
         frame_slice=slice(None), config: RobotConfig | None = None,
-        min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, terrain: HeightMap | None = None) -> RetargetResult:
+        min_edge_ratio=DEFAULT_MIN_EDGE_RATIO, terrain: HeightMap | None = None,
+        smplx: SMPLXSource | None = None) -> RetargetResult:
     data = prepare(asset_root, motion_path, robot=robot, frame_slice=frame_slice,
-                   config=config, min_edge_ratio=min_edge_ratio, terrain=terrain)
+                   config=config, min_edge_ratio=min_edge_ratio, terrain=terrain, smplx=smplx)
     return solve(data, settings)

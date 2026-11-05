@@ -1,4 +1,4 @@
-"""Vectorized BVH channel decoding and source graph preparation."""
+"""Common motion arrays, vectorized BVH decoding, and source graph preparation."""
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -14,6 +14,7 @@ class Motion:
     positions: np.ndarray  # [frames, joints, xyz], world coordinates
     root_rotations: np.ndarray  # [frames, 3, 3], root to world
     fps: float
+    units: str = 'original BVH length units'
 
 
 def read_bvh(path, frame_slice=slice(None)):

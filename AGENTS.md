@@ -74,7 +74,7 @@ the documented dependency versions. Rendering has been validated with
 ## Project Structure and Data Flow
 
 ```text
-BVH + Python robot config
+BVH or SMPL-X NPZ + Python robot/source config
         ↓ prepare()
 PreparedMotion
         ↓ solve()
@@ -90,7 +90,9 @@ computation separate from file export.
 | --- | --- |
 | `config.py` | Configuration base class, landmark-pair validation, pose dictionary isolation, and preset lookup |
 | `robots/` | Eight robot configuration classes and the `PRESETS` registry |
-| `motion.py` | BVH parsing, coordinate conversion, and source graph vectors |
+| `motion.py` | Common motion arrays, BVH parsing, coordinate conversion, and source graph vectors |
+| `smplx.py` | SMPL-X parameter validation, shape-dependent joint geometry, forward kinematics, and source reference poses |
+| `source_cli.py` | Shared SMPL-X source arguments for retargeting entry points |
 | `source_ground.py` | Static ground calibration over the complete input motion |
 | `terrain.py` | Target height fields, world coordinates, height derivatives, and portable data export |
 | `terrain_cli.py` | Shared terrain arguments for retargeting entry points |
@@ -184,7 +186,59 @@ joint angles and root height are optimized.
 - For the source reference pose, subtract the minimum toe height, then add 5% of the resulting
   pelvis height. Target initial root height is `-1.05` times the lowest reference toe z.
 
+### SMPL-X Input
+
+`SMPLXSource(model_path, up_axis='z', gender=None, flat_hand_mean=True)` is the explicit
+source configuration accepted by `prepare`, `run`, and `run_batch` as `smplx=`.
+BVH input keeps its existing reference and arithmetic. NPZ input requires this source
+object and derives its own reference from the selected body model and subject shape;
+it must not use a BVH reference with different body proportions.
+
+- Use the standard 55-joint SMPL-X hierarchy, including finger joints needed by the
+  existing robot mappings. Preserve SMPL-X joint names without substituting wrists
+  for the middle-finger or thumb landmarks.
+- Load only `v_template`, `J_regressor`, `shapedirs`, `kintree_table`, and optional hand
+  means. Project template and shape/expression bases through a sparse joint regressor
+  once per model, then release vertex arrays. Cache these small, read-only joint
+  bases per source instance and gender. No Torch, mesh skinning, or SMPL-X package
+  import is required by the runtime.
+- Joint locations follow the SMPL-X joint-regression and rigid-transform equations.
+  Pose blend shapes affect skinned vertices, not these 55 articulated joint origins.
+  Validate against the [official SMPL-X implementation](https://github.com/vchoutas/smplx)
+  as well as independent synthetic homogeneous-transform tests.
+- Support full 165-value poses and separate root/body/hand/jaw/eye axis angles.
+  Do not truncate SMPL or SMPL-H vectors or silently reinterpret PCA hand coefficients.
+  Absolute hand angles are the default; `flat_hand_mean=False` adds the model's learned
+  hand mean. A full `poses` array takes precedence over separately supplied fields.
+- Standard full models have 300 shape plus 100 expression directions; compact models
+  have 10 plus 10. Validate coefficient counts instead of silently truncating shape.
+  Static and per-frame shape/expression coefficients are supported. The standing
+  reference uses the first frame's shape and zero expression.
+- The default reference uses the same named joint rotations as the bundled standing
+  BVH: both ankle X angles at -20 degrees and shoulder Z angles at -90/+90 degrees.
+  `SMPLXSource.normalization_pose` is a Python-class override with axis-angle triples.
+- Canonical SMPL-X coordinates are Y-up; let `P` map `(x, y, z)` to `(z, x, y)`.
+  Let `C` map input world coordinates to MAHR: identity for AMASS Z-up, `P` for Y-up.
+  Convert positions with `C` and root rotations with `C @ R @ P.T`, distinguishing
+  the model's local axes from the motion's world axes. Applying `C @ R @ C.T` to
+  Z-up AMASS would leave the canonical root tilt in the prescribed robot pose.
+- Use the complete motion for ground calibration before slicing. Motion arrays carry
+  their units so SMPL-X calibration reports meters while BVH retains its original units.
+  Keep source-foot rotations out of the objective; they only enter source FK where
+  they affect actual descendant joint positions.
+- Body models are explicit user inputs, never downloaded or discovered implicitly at
+  runtime. Keep local model files under ignored `assets/body_models/` or an explicitly
+  selected external directory. Synthetic unit tests contain no trained model weights.
+  NPZ loading disables pickle; model PKL loading is limited to explicitly selected,
+  trusted body-model files. Directory model lookup prefers NPZ over PKL.
+
 ### Objective and Solver
+
+Each frame directly optimizes graph matching, regularization, temporal terms, and
+posture with bounded L-BFGS-B. Initialize the first frame from `initial_pose` and
+subsequent frames from the previous accepted solution. Store source joint positions
+and root rotations; full joint rotations are temporary FK data, not retained motion
+state or optimization targets.
 
 `FrameObjective` defines the numerical objective, analytic gradient, and diagnostics.
 Do not duplicate loss formulas in the solver. `LossBreakdown` contains graph matching,
@@ -257,9 +311,11 @@ completely constant field, whose normalized samples remain zero.
 holding all solved trajectories in memory. Load a requested height map once and share
 the read-only data across tasks. Each solve still owns its own kinematic workspace.
 
-Directory discovery is recursive and sorted, accepts case-insensitive BVH suffixes, and
+Directory discovery is recursive and sorted, accepts case-insensitive BVH and NPZ suffixes, and
 excludes relative path components beginning with `norm_pose`. An explicitly selected
-file bypasses that exclusion. Preserve each motion's relative path under its robot's
+file bypasses that exclusion. Exclude `.terrain.npz` sidecars during directory scans.
+Mixed-format batches share the supplied `SMPLXSource` model cache across tasks; ordinary
+BVH tasks require no body model. Preserve each motion's relative path under its robot's
 output directory. Preflight collisions across trajectories, statistics, and terrain
 sidecars before writing any task outputs.
 
@@ -313,7 +369,6 @@ quaternion convention when exporting.
 Rendering samples every fourth frame by default and adjusts playback FPS to preserve
 motion speed. It performs kinematic playback without dynamics or trajectory smoothing.
 Dark-material enhancement for H1 and GR1 affects display only.
-
 For bandwidth-limited previews, `render_motion.py --fps` selects the nearest source
 frame at each output timestamp; it does not interpolate or smooth the trajectory.
 The frame count is `ceil(source_frames * output_fps / source_fps)`, so duration is
@@ -339,7 +394,9 @@ normalization, source ground calibration, and independence from source foot-rota
 channels, the completeness of bundled model assets, terrain gradients and rendered
 surfaces (including submillimeter spans), portable terrain export, batch discovery,
 task failure isolation, live and interrupted batch records, linear serialization volume,
-and rendering without overwriting concurrent batch progress.
+and rendering without overwriting concurrent batch progress. SMPL-X tests cover independent
+joint regression and homogeneous FK, coordinate conventions, shape-dependent reference
+poses, parameter validation, model reuse, mixed-format batches, and all eight robots.
 Run checks appropriate to the change.
 For documentation changes, verify links,
 arguments, and executable examples.
@@ -358,8 +415,34 @@ Baseline directories are not distributed test assets. If unavailable, generate t
 with the pre-change version in the same environment. Save post-change results in a
 new directory to avoid overwriting the baseline.
 
+Orientation initialization was evaluated and removed on 2026-11-05. On the two CMU
+subject 85 clips, its final orientation RMS improvements were about 0.01 to 0.13
+degrees, while a controlled X1 Dance benchmark approximately doubled solve time.
+Graph refinement largely undid the initialization benefit. Keep the runtime focused
+on direct graph optimization; do not retain orientation mappings, angular Jacobians,
+initialization switches, or stage-specific statistics. Historical comparisons remain
+in ignored result artifacts.
+
+Single-stage validation after removal on 2026-11-05 passed all 44 tests. Both bundled
+BVHs and the complete CMU `85_03` and `85_12` clips passed on all eight robots:
+68504 robot frames converged and matched the saved graph-only trajectories exactly,
+including root positions and quaternions. Joint/root bounds and velocity checks
+passed; first/middle/last analytic-gradient checks had maximum error `3.06e-9`.
+Settings and output statistics contain no orientation-initialization fields.
+
 Local validation recorded on 2026-11-04:
 
+- SMPL-X support passed all 43 tests, compilation, and whitespace checks. Using a
+  user-supplied female SMPL-X model and a 5171-frame AMASS DanceDB motion, the first
+  55 joint positions matched the official float64 SMPL-X implementation within
+  `2.47e-9` meters at seven sampled frames. All eight robots retargeted the first
+  500 frames (4000 output frames), with no unconverged frames and all joint/root
+  bounds and velocity checks passing. Analytic gradient checks at the first, middle,
+  and last output frames had a maximum error of `1.91e-9`.
+  The two complete bundled BVHs still matched their preceding baselines exactly
+  across 6552 output frames. G1 and X1 SMPL-X previews at 320-by-240 and 30 Hz passed
+  FFprobe and full decoding checks. Results are under `results/smplx_validation/`;
+  body-model weights and motion inputs are local validation assets, not test dependencies.
 - Batch record ownership, incremental progress, and small terrain spans passed all
   34 tests. With solving and file I/O mocked, 500 and 1000 tasks serialized 0.238 MB
   and 0.475 MB respectively, including the journal and snapshots; the preceding
