@@ -30,11 +30,11 @@ def set_mesh_vertices(model, geom_id, vertices, normals):
 
 
 def add_ground(spec: mujoco.MjSpec, terrain: HeightMap | None = None, *, grid=False):
-    style = dict(name='floor', rgba=[.22, .27, .33, 1], contype=0, conaffinity=0)
+    style = dict(name='floor', rgba=[.8, .8, .8, 1], contype=0, conaffinity=0)
     if grid:
         spec.add_texture(name='terrain_grid', type=mujoco.mjtTexture.mjTEXTURE_2D,
                          builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER, width=128, height=128,
-                         rgb1=[.25, .30, .35], rgb2=[.38, .43, .48])
+                         rgb1=[.65, .65, .65], rgb2=[.95, .95, .95])
         material = spec.add_material(name='terrain_grid', texuniform=True, texrepeat=[2., 2.],
                                      reflectance=0., specular=0.)
         material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = 'terrain_grid'
@@ -54,3 +54,14 @@ def add_ground(spec: mujoco.MjSpec, terrain: HeightMap | None = None, *, grid=Fa
                     userdata=samples.ravel().tolist(), size=[*terrain.half_size, span, .1])
     spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_HFIELD, hfieldname='terrain',
                             pos=terrain.origin + [0., 0., minimum], **style)
+
+
+def add_environment(spec: mujoco.MjSpec, terrain: HeightMap | None = None, *, grid=True):
+    """Shared playback environment: white sky, gray/white ground, and lighting."""
+    spec.add_texture(name='sky', type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
+                     builtin=mujoco.mjtBuiltin.mjBUILTIN_FLAT,
+                     rgb1=[1., 1., 1.], rgb2=[1., 1., 1.], width=64, height=384)
+    add_ground(spec, terrain, grid=grid)
+    spec.worldbody.add_light(pos=[1, -2, 5], dir=[-1, 2, -5], diffuse=[.8, .8, .8])
+    spec.visual.headlight.ambient = [.4, .4, .4]
+    spec.visual.headlight.diffuse = [.7, .7, .7]

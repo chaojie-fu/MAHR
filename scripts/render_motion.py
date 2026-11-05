@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
-from mahr.rendering import add_ground
+from mahr.rendering import add_environment
 from mahr.terrain import HeightMap
 
 
@@ -23,7 +23,8 @@ def main():
     parser.add_argument('--width', type=int, default=960)
     parser.add_argument('--height', type=int, default=720)
     parser.add_argument('--bitrate', type=int, help='Target and maximum video bitrate in kbit/s')
-    parser.add_argument('--ground-grid', action='store_true', help='Checker ground texture to show terrain shape')
+    parser.add_argument('--ground-grid', action=argparse.BooleanOptionalAction, default=True,
+                        help='Gray/white checker ground texture')
     parser.add_argument('--camera-distance', type=float, default=3., help='Camera distance in meters (default: 3)')
     parser.add_argument('--enhance-dark-materials', action='store_true', help='Lift very dark display colors for visibility')
     args = parser.parse_args()
@@ -55,10 +56,7 @@ def main():
                 geom.rgba[:3] = np.maximum(geom.rgba[:3], .35)
     body = next(iter(spec.worldbody.bodies))
     body.add_joint(name='playback_root', type=mujoco.mjtJoint.mjJNT_FREE)
-    add_ground(spec, terrain, grid=args.ground_grid)
-    spec.worldbody.add_light(pos=[1, -2, 5], dir=[-1, 2, -5], diffuse=[.8, .8, .8])
-    spec.visual.headlight.ambient = [.4, .4, .4]
-    spec.visual.headlight.diffuse = [.7, .7, .7]
+    add_environment(spec, terrain, grid=args.ground_grid)
     spec.visual.global_.offwidth = args.width
     spec.visual.global_.offheight = args.height
     model = spec.compile()

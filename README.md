@@ -332,10 +332,11 @@ MUJOCO_GL=osmesa python scripts/render_motion.py results/g1.json \
 
 The first argument points to the trajectory JSON, `--urdf` selects the playback
 model, and `-o` specifies the output video. Videos play at the original motion speed.
-For another robot, use its URDF path from the model table.
+The scene uses a white sky and a gray/white checker floor; `--no-ground-grid` selects
+a uniform gray floor. For another robot, use its URDF path from the model table.
 
 For a low-bandwidth preview at exactly 30 fps, use a smaller frame size and a bitrate
-budget in kbit/s. `--ground-grid` makes terrain shape easier to see:
+budget in kbit/s. The ground grid also makes terrain shape easier to see:
 
 ```bash
 MUJOCO_GL=osmesa python scripts/render_motion.py results/g1_ramp.json \

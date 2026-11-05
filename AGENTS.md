@@ -96,7 +96,7 @@ computation separate from file export.
 | `source_ground.py` | Static ground calibration over the complete input motion |
 | `terrain.py` | Target height fields, world coordinates, height derivatives, and portable data export |
 | `terrain_cli.py` | Shared terrain arguments for retargeting entry points |
-| `rendering.py` | Terrain scene geometry and compiled-frame mesh updates |
+| `rendering.py` | Shared playback environment, matching terrain geometry, and compiled-frame mesh updates |
 | `normalization.py` | Skeleton-height estimation and edge denominator floors |
 | `kinematics.py` | Mesh-free MuJoCo FK, body origins, and landmark Jacobians |
 | `graph.py` | Graph topology, ground-height relations, proximity weights, and edge derivatives |
@@ -369,6 +369,11 @@ quaternion convention when exporting.
 Rendering samples every fourth frame by default and adjusts playback FPS to preserve
 motion speed. It performs kinematic playback without dynamics or trajectory smoothing.
 Dark-material enhancement for H1 and GR1 affects display only.
+Use `rendering.add_environment` for a shared white skybox, gray/white checker ground,
+and lighting in robot and source previews. The checker is enabled by default;
+`--no-ground-grid` selects a uniform gray floor. Keep camera and environment settings
+identical across comparison panels.
+
 Animated source meshes must preserve MuJoCo's compiled geom and inertial transforms.
 Use `rendering.set_mesh_vertices` to convert body-frame vertices and normals into the
 compiled mesh frame, then upload the mesh. Do not reset `geom_pos`/`geom_quat` after
