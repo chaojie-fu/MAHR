@@ -119,7 +119,4 @@ def prepare_source(motion, rest, landmark_names, toe_names, edges,
     # Body -> ground uses -height: clip source penetration before normalization.
     vectors[:, edges.ground, 2] = np.minimum(vectors[:, edges.ground, 2], 0.)
     vectors /= scale[None, :, None]
-    foot_distance = np.linalg.norm(rest.positions[0, toes[0], :2] - rest.positions[0, toes[1], :2])
-    if foot_distance <= 0:
-        raise ValueError('Source rest toe distance must be positive')
-    return vectors, float(foot_distance)
+    return vectors

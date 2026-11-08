@@ -25,6 +25,8 @@ class HeightMap:
             raise ValueError('Terrain origin must contain three finite coordinates')
         for array in (self.heights, self.half_size, self.origin):
             array.setflags(write=False)
+        self.constant_height = (float(self.heights.flat[0] + self.origin[2])
+                                if np.all(self.heights == self.heights.flat[0]) else None)
         self._pixel_scale = (np.array(self.heights.shape[::-1]) - 1) / (2 * self.half_size)
 
     @classmethod

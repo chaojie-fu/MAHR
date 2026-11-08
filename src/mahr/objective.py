@@ -3,6 +3,7 @@ from typing import NamedTuple
 
 import numpy as np
 from .graph import proximity_weights
+from .ground import RootCorrection
 
 CLIPPED_POSE_LIMIT = .78
 REFERENCE_FRAME_DT = 1 / 120
@@ -13,34 +14,55 @@ class LossBreakdown(NamedTuple):
     regularization: float
     temporal: float
     posture: float
+    ground_xy: float
+    root_xy: float
+    source_pose: float
 
     @property
     def total(self):
-        return self.graph + self.regularization + self.temporal + self.posture
+        return sum(self)
 
 
 class FrameObjective:
-    """Owns scratch arrays for one frame; returned gradients never alias them."""
+    """One FK per evaluation; full states are [joints, world Z, correction XY].
+
+    On horizontal ground, a [joints, world Z] input eliminates the bounded XY
+    quadratic exactly. Varying terrain requires the full state and its gradient.
+    Returned gradients never alias scratch arrays.
+    """
 
     def __init__(self, robot, edges, scale, target, rotation, settings, *,
-                 posture_reference, previous=None, older=None, frame_dt=REFERENCE_FRAME_DT,
-                 terrain=None, root_xy=None):
+                 posture_reference, body_height, ground_targets, root_xy, pose, pose_target,
+                 previous=None, older=None, frame_dt=REFERENCE_FRAME_DT, terrain=None):
         self.robot, self.edges, self.scale = robot, edges, scale
         self.target, self.rotation, self.settings = target, rotation, settings
         self.posture_reference = posture_reference
-        self.terrain, self.root_xy = terrain, root_xy
-        if terrain is not None and root_xy is None:
-            raise ValueError('Terrain objectives require world root XY coordinates')
-        self.ground_height = float(terrain.sample(root_xy)) if terrain is not None else 0.
-        self.weights = proximity_weights(target)
-        self.previous, self.older = previous, older
-        self.time_scale = REFERENCE_FRAME_DT / frame_dt
-        self.temporal_weight = settings.temporal_weight * self.time_scale**2
-        self.acceleration_weight = settings.acceleration_weight * self.time_scale**4
+        self.pose, self.pose_target = pose, np.asarray(pose_target, dtype=float)
+        if self.pose_target.shape != (len(pose.a), 3) or not np.isfinite(self.pose_target).all():
+            raise ValueError('Expected finite source pose directions matching the pose segments')
+        self.terrain, self.root_xy = terrain, np.asarray(root_xy, dtype=float)
+        self.ground_targets = np.asarray(ground_targets, dtype=float)
+        if self.root_xy.shape != (2,) or not np.isfinite(self.root_xy).all():
+            raise ValueError('Expected finite world root XY coordinates')
+        if self.ground_targets.shape != (len(edges.ground_sources), 2) or not np.isfinite(self.ground_targets).all():
+            raise ValueError('Expected finite world XY targets for each ground edge')
+        if not np.isfinite(body_height) or body_height <= 0:
+            raise ValueError('Body height must be positive and finite')
+        self.n = robot.dofs + 1
+        self.variable_terrain = terrain is not None and terrain.constant_height is None
+        self.weights = proximity_weights(target, settings.proximity_coefficient)
+        self.ground_weights = self.weights[edges.ground_indices] * settings.ground_weight
+        self.ground_scale = body_height * settings.ground_scale_ratio
+        self.root = RootCorrection(body_height, settings)
+        self.previous = None if previous is None else previous[:self.n]
+        self.older = None if older is None else older[:self.n]
+        time_scale = REFERENCE_FRAME_DT / frame_dt
+        self.temporal_weight = settings.temporal_weight * time_scale**2
+        self.acceleration_weight = settings.acceleration_weight * time_scale**4
         self.calls = 0
         self._error = np.empty_like(target)
         self._weighted_error = np.empty_like(target)
-        self._edge_jacobian = np.empty((len(edges.pairs), 3, robot.dofs + 1))
+        self._edge_jacobian = np.empty((len(edges.pairs), 3, self.n))
 
     def temporal_terms(self, x):
         value, gradient = 0., np.zeros_like(x)
@@ -62,44 +84,73 @@ class FrameObjective:
         gradient[:-1] = 2 * self.settings.posture_weight * delta
         return self.settings.posture_weight * np.dot(delta, delta), gradient
 
-    def regularization_terms(self, x):
-        # The clipped-square regularizer includes root height too.
-        if self.terrain is not None:
-            x = x.copy()
-            x[-1] -= self.ground_height
+    def regularization_terms(self, x, ground_height=0.):
+        # The clipped-square regularizer includes height above the target terrain.
+        x = x.copy()
+        x[-1] -= ground_height
         clipped = np.clip(x, -CLIPPED_POSE_LIMIT, CLIPPED_POSE_LIMIT)
         value = self.settings.regularization * np.dot(clipped, clipped)
         gradient = 2 * self.settings.regularization * x * (np.abs(x) < CLIPPED_POSE_LIMIT)
         return value, gradient
 
     def _evaluate(self, x, jacobian):
+        eliminated = len(x) == self.n
+        if len(x) not in (self.n, self.n + 2) or (eliminated and self.variable_terrain):
+            raise ValueError('Varying terrain requires joints, root height, and XY correction')
+        base = x[:self.n]
         if jacobian:
-            positions, jac = self.robot.evaluate(x[:-1])
+            positions, jac = self.robot.evaluate(base[:-1])
         else:
-            positions = self.robot.evaluate(x[:-1], jacobian=False)
+            positions = self.robot.evaluate(base[:-1], jacobian=False)
+        source_pose, pose_gradient = self.pose.loss_gradient(
+            positions, self.pose_target, jac if jacobian else None)
+        source_pose *= self.settings.source_pose_weight
+        ids = self.edges.ground_sources
+        landmark_xy = positions[ids] @ self.rotation[:2].T + self.root_xy
+        error_xy = landmark_xy - self.ground_targets
+        correction = self.root.minimize(error_xy, self.ground_weights, self.ground_scale) if eliminated else x[self.n:]
+        self.correction = correction.copy()
         heights = slopes = None
-        if self.terrain is not None:
-            xy = positions[self.edges.ground_sources] @ self.rotation[:2].T + self.root_xy
-            if jacobian:
-                heights, slopes = self.terrain.sample(xy, gradient=True)
-            else:
-                heights = self.terrain.sample(xy)
-        error = self.edges.vectors(positions, self.rotation, x[-1], ground_heights=heights, out=self._error)
+        ground_height, root_slopes = 0., np.zeros(2)
+        if self.variable_terrain:
+            xy = landmark_xy + correction
+            heights, slopes = self.terrain.sample(xy, gradient=True)
+            ground_height, root_slopes = self.terrain.sample(self.root_xy + correction, gradient=True)
+        elif self.terrain is not None:
+            ground_height = self.terrain.constant_height
+            heights = ground_height
+        error = self.edges.vectors(positions, self.rotation, base[-1], ground_heights=heights, out=self._error)
         error /= self.scale[:, None]
         error -= self.target
         weighted_error = np.multiply(self.weights[:, None], error, out=self._weighted_error)
         graph = np.sum(weighted_error * error)
-        regularization, regularization_gradient = self.regularization_terms(x)
-        temporal, temporal_gradient = self.temporal_terms(x)
-        posture, posture_gradient = self.posture_terms(x)
-        losses = LossBreakdown(float(graph), float(regularization), float(temporal), float(posture))
+        regularization, regularization_gradient = self.regularization_terms(base, ground_height)
+        temporal, temporal_gradient = self.temporal_terms(base)
+        posture, posture_gradient = self.posture_terms(base)
+        error_xy = error_xy + correction
+        weighted_xy = self.ground_weights[:, None] * error_xy / self.ground_scale**2
+        ground_xy = float(np.sum(weighted_xy * error_xy))
+        root_xy, root_gradient = self.root.value_gradient(correction)
+        losses = LossBreakdown(float(graph), float(regularization), float(temporal), float(posture), ground_xy, root_xy, source_pose)
         gradient = None
         if jacobian:
             dv = self.edges.derivatives(jac, self.rotation, ground_slopes=slopes, out=self._edge_jacobian)
             dv /= self.scale[:, None, None]
-            gradient = 2 * np.einsum('ej,ejd->d', weighted_error, dv)
-            gradient += regularization_gradient
-            gradient = gradient + temporal_gradient + posture_gradient
+            base_gradient = 2 * np.einsum('ej,ejd->d', weighted_error, dv)
+            base_gradient += regularization_gradient
+            base_gradient = base_gradient + temporal_gradient + posture_gradient
+            gradient = np.zeros_like(x)
+            gradient[:self.n] = base_gradient
+            gradient[:self.n-1] += self.settings.source_pose_weight * pose_gradient
+            local_gradient = 2 * weighted_xy @ self.rotation[:2]
+            gradient[:self.n-1] += np.einsum('ej,ejd->d', local_gradient, jac[ids])
+            if not eliminated:
+                gradient[self.n:] = 2 * weighted_xy.sum(axis=0) + root_gradient
+                if self.variable_terrain:
+                    indices = self.edges.ground_indices
+                    gradient[self.n:] += 2 * np.sum(
+                        (weighted_error[indices, 2] / self.scale[indices])[:, None] * slopes, axis=0)
+                    gradient[self.n:] -= regularization_gradient[-1] * root_slopes
         return losses, gradient
 
     def losses(self, x):

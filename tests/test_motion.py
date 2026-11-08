@@ -4,8 +4,7 @@ from pathlib import Path
 import unittest
 import numpy as np
 from numpy.testing import assert_allclose
-from mahr.pipeline import prepare
-from mahr.solver import Retargeter
+from mahr.pipeline import prepare, solve
 from test_core import ASSET_ROOT as P,MOTION as M
 
 class MotionTests(unittest.TestCase):
@@ -31,8 +30,8 @@ class MotionTests(unittest.TestCase):
    assert_allclose(a.motion.positions,b.motion.positions,atol=1e-12)
    solutions=[]
    for data in (a,b):
-    solutions.append(Retargeter(data.robot,data.edges,data.scales,posture_reference=data.posture_reference).solve(
-        data.source_vectors,data.motion.root_rotations,data.initial,frame_dt=1/data.motion.fps)[0])
+    trajectory=solve(data).trajectory
+    solutions.append(np.c_[trajectory.joint_positions,trajectory.root_positions])
    assert_allclose(solutions[0],solutions[1],atol=1e-12,rtol=0)
 
 if __name__=='__main__':unittest.main()

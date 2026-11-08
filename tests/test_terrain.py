@@ -62,10 +62,13 @@ class TerrainTests(unittest.TestCase):
         d = prepare(ASSET_ROOT, MOTION, frame_slice=slice(0, 1))
         terrain = HeightMap([[.1, .3, .2], [.5, .4, .7], [.2, .6, .3]], half_size=(2, 3))
         rotation = Rotation.from_euler('xyz', [.21, -.32, .71]).as_matrix()
-        x = d.initial + .03
+        x = np.r_[d.initial + .03, .01, -.02]
         objective = FrameObjective(d.robot, d.edges, d.scales, d.source_vectors[0], rotation, Settings(),
-                                   posture_reference=d.posture_reference, previous=x-.02, older=x-.03,
-                                   terrain=terrain, root_xy=np.array([.37, -.28]))
+                                   posture_reference=d.posture_reference, body_height=d.normalization['target_height'],
+                                   previous=x-.02, older=x-.03, ground_targets=d.ground_targets[0],
+                                   terrain=terrain, root_xy=np.array([.37, -.28]), pose=d.pose, pose_target=d.pose_targets[0])
+        # Exercise the unclipped root-height regularizer and its terrain-XY derivative.
+        x[-3] = float(terrain.sample(np.array([.37, -.28]) + x[-2:])) + .4
         value, gradient = objective.value_gradient(x)
         assert_allclose(value, objective.value(x), atol=1e-12)
         assert_allclose(gradient, approx_derivative(objective.value, x).ravel(), atol=2e-7, rtol=1e-5)
@@ -92,32 +95,59 @@ class TerrainTests(unittest.TestCase):
         assert_array_equal(flat.prepared.scales, mapped.prepared.scales)
         assert_array_equal(flat.prepared.source_vectors, mapped.prepared.source_vectors)
         assert_array_equal(flat.trajectory.coordinates, mapped.trajectory.coordinates)
+        assert_array_equal(flat.trajectory.root_positions, mapped.trajectory.root_positions)
 
     def test_vertical_translation_preserves_loss_and_gradient(self):
         d = prepare(ASSET_ROOT, MOTION, robot='icub', frame_slice=slice(0, 1))
-        x = d.initial + .02
+        x = np.r_[d.initial + .02, .01, -.02]
         values = []
         for offset in (0., -2., 5.):
             state = x.copy()
-            state[-1] += offset
+            state[-3] += offset
             objective = FrameObjective(d.robot, d.edges, d.scales, d.source_vectors[0],
                                        d.motion.root_rotations[0], Settings(),
-                                       posture_reference=d.posture_reference, previous=state-.02,
-                                       older=state-.03, terrain=HeightMap([[0, 0], [0, 0]], origin=(0, 0, offset)),
-                                       root_xy=np.array([.5, -.3]))
+                                       posture_reference=d.posture_reference, body_height=d.normalization['target_height'],
+                                       previous=state-.02, older=state-.03, ground_targets=d.ground_targets[0],
+                                       terrain=HeightMap([[0, 0], [0, 0]], origin=(0, 0, offset)),
+                                       root_xy=np.array([.5, -.3]), pose=d.pose, pose_target=d.pose_targets[0])
             values.append(objective.value_gradient(state))
         for value, gradient in values[1:]:
             assert_allclose(value, values[0][0], atol=1e-12)
             assert_allclose(gradient, values[0][1], atol=1e-12)
 
-    def test_infeasible_terrain_velocity_bounds_report_the_frame(self):
+    def test_terrain_clearance_can_exceed_former_root_velocity_bound(self):
         d = prepare(ASSET_ROOT, MOTION, frame_slice=slice(0, 2))
         terrain = HeightMap([[0, 10], [0, 10]], half_size=(1, 1))
-        solver = Retargeter(d.robot, d.edges, d.scales, posture_reference=d.posture_reference, terrain=terrain)
+        solver = Retargeter(d.robot, d.edges, d.scales, posture_reference=d.posture_reference,
+                            body_height=d.normalization['target_height'], terrain=terrain, pose=d.pose)
         with self.assertRaisesRegex(ValueError, 'world root XY'):
-            solver.solve(d.source_vectors, d.motion.root_rotations, d.initial)
-        with self.assertRaisesRegex(RuntimeError, 'frame 1'):
-            solver.solve(d.source_vectors, d.motion.root_rotations, d.initial, root_xy=[[-1, 0], [1, 0]])
+            solver.solve(d.source_vectors, d.motion.root_rotations, d.initial, pose_targets=d.pose_targets)
+        root_xy = np.array([[-1., 0.], [1., 0.]])
+        q, corrections, stats = solver.solve(d.source_vectors, d.motion.root_rotations, d.initial,
+            root_xy=root_xy, ground_targets=d.ground_targets, pose_targets=d.pose_targets)
+        self.assertTrue(all(s['success'] for s in stats))
+        clearance = q[:, -1] - terrain.sample(root_xy+corrections)
+        self.assertTrue(np.all(clearance >= -1e-7))
+        self.assertTrue(np.all(clearance <= 4.+1e-7))
+        self.assertGreater(abs(q[1, -1]-q[0, -1]), 2/120)
+
+    def test_corrected_root_clearance_gradient_and_required_full_state(self):
+        d = prepare(ASSET_ROOT, MOTION, frame_slice=slice(0, 1))
+        terrain = HeightMap([[0, 1], [0, 1]], half_size=(1, 1))
+        solver = Retargeter(d.robot, d.edges, d.scales, posture_reference=d.posture_reference,
+                            body_height=d.normalization['target_height'], terrain=terrain, pose=d.pose)
+        x = np.r_[d.initial, .1, -.03]
+        root_xy = np.array([.2, .3])
+        expected = x[-3] - float(terrain.sample(root_xy+x[-2:]))
+        assert_allclose(solver._clearance(x, root_xy), [expected, 4.-expected])
+        assert_allclose(solver._clearance(x, root_xy, jacobian=True),
+                        approx_derivative(lambda state: solver._clearance(state, root_xy), x), atol=1e-9)
+        obj = FrameObjective(d.robot, d.edges, d.scales, d.source_vectors[0],
+                             d.motion.root_rotations[0], Settings(), posture_reference=d.posture_reference,
+                             body_height=d.normalization['target_height'], ground_targets=d.ground_targets[0],
+                             root_xy=root_xy, terrain=terrain, pose=d.pose, pose_target=d.pose_targets[0])
+        with self.assertRaisesRegex(ValueError, 'Varying terrain'):
+            obj.value(d.initial)
 
     def test_elevated_map_export_remains_portable(self):
         terrain = HeightMap(np.zeros((2, 3)), origin=(0, 0, 5))

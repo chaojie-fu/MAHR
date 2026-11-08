@@ -25,9 +25,9 @@ class NormalizationTests(unittest.TestCase):
         points=np.array([[[0,0,1.],[.1,0,0],[-.1,0,0],[0,0,2.]]])
         rot=np.eye(3)[None];rest=Motion(names,points,rot,120)
         motion=Motion(names,points-[0,0,.1],rot,120);edges=EdgeSpace(4)
-        vectors,_=prepare_source(motion,rest,names,['left','right'],edges)
+        vectors=prepare_source(motion,rest,names,['left','right'],edges)
         assert_allclose(vectors[0,edges.ground,2][1:3],0.)
-        scaled,_=prepare_source(Motion(names,motion.positions*100,rot,120),Motion(names,points*100,rot,120),names,['left','right'],edges)
+        scaled=prepare_source(Motion(names,motion.positions*100,rot,120),Motion(names,points*100,rot,120),names,['left','right'],edges)
         assert_allclose(vectors,scaled,atol=1e-12)
 
 if __name__=='__main__':unittest.main()

@@ -1,6 +1,7 @@
 """Typed Python robot configuration and built-in preset lookup."""
 from pathlib import Path
 from math import isfinite
+from .pose import DEFAULT_POSE_PAIRS
 
 
 DEFAULT_ASSET_ROOT = Path(__file__).resolve().parents[2] / 'assets'
@@ -27,12 +28,14 @@ class RobotConfig:
     source_toes: tuple[str, ...] = ('left_foot', 'right_foot')
     source_rest_path = 'motions/norm_pose/norm_pose_stand.bvh'
     edges: tuple[tuple[int, int], ...] | None = None
+    pose_pairs: tuple[tuple[str, str], ...] = DEFAULT_POSE_PAIRS
 
     def __init__(self, asset_root: str | Path = DEFAULT_ASSET_ROOT):
         asset_root = Path(asset_root)
         self.urdf = asset_root / self.urdf_path
         self.source_rest = asset_root / self.source_rest_path
         self.landmark_pairs = tuple(tuple(pair) for pair in self.landmark_pairs)
+        self.pose_pairs = tuple(tuple(pair) for pair in self.pose_pairs)
         if not self.landmark_pairs or any(
             len(pair) != 2 or any(not isinstance(n, str) or not n or n == 'ground' for n in pair)
             for pair in self.landmark_pairs

@@ -24,9 +24,9 @@ class Trajectory:
         return self.coordinates[:, :-1]
 
     @classmethod
-    def from_solution(cls, joint_names, coordinates, motion, horizontal_ratio):
+    def from_solution(cls, joint_names, coordinates, motion, root_xy):
         positions = motion.positions[:, 0].copy()
-        positions[:, :2] *= horizontal_ratio
+        positions[:, :2] = root_xy
         positions[:, 2] = coordinates[:, -1]
         quaternions = Rotation.from_matrix(motion.root_rotations).as_quat()
         return cls(tuple(joint_names), coordinates, positions, quaternions, motion.fps)

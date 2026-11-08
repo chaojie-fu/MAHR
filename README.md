@@ -15,8 +15,14 @@ reference poses, an example height map, and two example motions are included
 in this repository. The commands below reproduce both motions on all supported robots
 and compare their results in a single video.
 
+By default, MAHR scales horizontal motion by reference body height and refines the
+root path using fixed ground-grid relationships to reduce foot sliding. Source body
+pose matching helps preserve the motion through graph refinement. The same workflow
+applies to all eight robots, without additional configuration.
+
 The output consists of kinematic trajectories for motion analysis, data preparation,
-and downstream control research. Ground penetration may occur, and dynamic balance,
+and downstream control research. Temporal regularization encourages continuity;
+joint and root speeds are not hard-limited. Ground penetration may occur, and dynamic balance,
 self-collision, and contact forces are not validated by this pipeline.
 
 ## How to use
@@ -285,7 +291,7 @@ height queries use the nearest boundary. Choose a footprint covering the robot's
 
 The source motion still uses a calibrated horizontal floor. The supplied height map
 describes the target terrain. Retargeting adjusts joint angles and root height while
-preserving the scaled horizontal path; it does not plan a route around obstacles.
+refining the height-scaled horizontal path; it does not plan a route around obstacles.
 Omit `--height-map` for the default flat ground.
 
 Terrain runs also save `g1_ramp.terrain.npz` next to the trajectory. Keep these files

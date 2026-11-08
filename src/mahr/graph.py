@@ -1,4 +1,4 @@
-"""Compiled edge indices. Ground is a height relation, never a spatial point."""
+"""Compiled body edges and vertical ground relations; XY residuals live in the objective."""
 import numpy as np
 from .normalization import DEFAULT_MIN_EDGE_RATIO, edge_denominators, skeleton_height
 
@@ -52,8 +52,10 @@ class EdgeSpace:
         return edge_denominators(lengths, body_height, min_edge_ratio)
 
 
-def proximity_weights(source_vectors):
+def proximity_weights(source_vectors, coefficient=1.):
     # Legacy implementation uses NORMALIZED vectors, unlike paper Eq. 4's raw distances.
-    logits = -5. * np.linalg.norm(source_vectors, axis=1)
+    if not np.isfinite(coefficient) or coefficient < 0:
+        raise ValueError('Proximity coefficient must be finite and nonnegative')
+    logits = -coefficient * np.linalg.norm(source_vectors, axis=1)
     weights = np.exp(logits - logits.max())
     return weights / weights.sum()

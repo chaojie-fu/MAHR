@@ -27,17 +27,25 @@ class CoreTests(unittest.TestCase):
 
     def test_objective_gradient_with_temporal_history(self):
         d = self.data
-        x = d.initial+.03
+        x = np.r_[d.initial+.03, .01, -.02]
         for dt in (1/120,1/60):
             for rotation in (d.motion.root_rotations[0],Rotation.from_euler('xyz',[.2,-.3,.7]).as_matrix()):
-                obj = FrameObjective(d.robot,d.edges,d.scales,d.source_vectors[0],rotation,Settings(),posture_reference=d.posture_reference,previous=x-.02,older=x-.03,frame_dt=dt)
+                obj = FrameObjective(d.robot, d.edges, d.scales, d.source_vectors[0], rotation, Settings(),
+                                     ground_targets=d.ground_targets[0],
+                                     root_xy=d.motion.positions[0, 0, :2]*d.horizontal_ratio,
+                                     posture_reference=d.posture_reference,
+                                     body_height=d.normalization['target_height'],
+                                     previous=x-.02, older=x-.03, frame_dt=dt, pose=d.pose, pose_target=d.pose_targets[0])
                 value, gradient = obj.value_gradient(x)
                 assert_allclose(value,obj.value(x),atol=1e-12)
                 assert_allclose(gradient,approx_derivative(obj.value,x).ravel(),atol=2e-7,rtol=1e-5)
 
     def test_posture_prior_does_not_saturate(self):
         d = self.data
-        obj = FrameObjective(d.robot,d.edges,d.scales,d.source_vectors[0],d.motion.root_rotations[0],Settings(),posture_reference=d.posture_reference)
+        obj = FrameObjective(d.robot, d.edges, d.scales, d.source_vectors[0],
+                             d.motion.root_rotations[0], Settings(), ground_targets=d.ground_targets[0],
+                             root_xy=d.motion.positions[0, 0, :2]*d.horizontal_ratio,
+                             posture_reference=d.posture_reference, body_height=d.normalization['target_height'], pose=d.pose, pose_target=d.pose_targets[0])
         x = d.initial.copy();x[0]+=2.
         value, gradient = obj.posture_terms(x)
         self.assertGreater(value,0.)
@@ -48,9 +56,10 @@ class CoreTests(unittest.TestCase):
         d = self.data
         obj = FrameObjective(d.robot, d.edges, d.scales, d.source_vectors[0],
                              d.motion.root_rotations[0], Settings(),
-                             posture_reference=d.posture_reference,
-                             previous=d.initial-.02, older=d.initial-.03)
-        x = d.initial+.03
+                             posture_reference=d.posture_reference,body_height=d.normalization['target_height'],
+                             ground_targets=d.ground_targets[0],root_xy=d.motion.positions[0,0,:2]*d.horizontal_ratio,
+                             previous=np.r_[d.initial-.02, .01, -.02], older=np.r_[d.initial-.03, .009, -.021], pose=d.pose, pose_target=d.pose_targets[0])
+        x = np.r_[d.initial+.03, .01, -.02]
         value, gradient = obj.value_gradient(x)
         saved_gradient = gradient.copy()
         # Interleave states and value-only calls, then revisit the accepted state.
@@ -58,25 +67,31 @@ class CoreTests(unittest.TestCase):
         obj.value(x-.2)
         losses = obj.losses(x)
         self.assertEqual(value, losses.total)
-        self.assertEqual(losses.total, losses.graph+losses.regularization+losses.temporal+losses.posture)
+        self.assertEqual(losses.total, sum(losses))
         assert_allclose(gradient, saved_gradient, atol=0, rtol=0)
         repeated_value, repeated_gradient = obj.value_gradient(x)
         self.assertEqual(value, repeated_value)
         assert_allclose(repeated_gradient, saved_gradient, atol=0, rtol=0)
 
-    def test_temporal_bounds_at_different_frame_rates(self):
+    def test_static_bounds_at_different_frame_rates(self):
         d = self.data
+        solver = Retargeter(d.robot, d.edges, d.scales, posture_reference=d.posture_reference,
+                            body_height=d.normalization['target_height'], pose=d.pose)
         for dt in (1/120,1/60):
-            q,stats = Retargeter(d.robot,d.edges,d.scales,posture_reference=d.posture_reference).solve(d.source_vectors,d.motion.root_rotations,d.initial,frame_dt=dt)
+            q, corrections, stats = solver.solve(
+                d.source_vectors, d.motion.root_rotations, d.initial, frame_dt=dt,
+                root_xy=d.motion.positions[:, 0, :2]*d.horizontal_ratio, ground_targets=d.ground_targets, pose_targets=d.pose_targets)
             self.assertTrue(all(s['success'] for s in stats))
             self.assertTrue(np.isfinite(q).all())
-            self.assertLessEqual(abs(np.diff(q[:,:-1],axis=0)).max(),8*dt+1e-9)
-            self.assertLessEqual(abs(np.diff(q[:,-1])).max(),2*dt+1e-9)
+            height = d.normalization['target_height']
+            self.assertLessEqual(abs(corrections).max(), .2*height+1e-9)
             self.assertTrue(np.all(q[:,:-1]>=d.robot.lower-1e-9))
             self.assertTrue(np.all(q[:,:-1]<=d.robot.upper+1e-9))
+            self.assertTrue(np.all((q[:,-1]>=0.) & (q[:,-1]<=4.)))
         for dt in (0.,-1.,float('nan')):
             with self.assertRaises(ValueError):
-                Retargeter(d.robot,d.edges,d.scales,posture_reference=d.posture_reference).solve(d.source_vectors,d.motion.root_rotations,d.initial,frame_dt=dt)
+                solver.solve(d.source_vectors, d.motion.root_rotations, d.initial, frame_dt=dt,
+                             root_xy=d.motion.positions[:, 0, :2]*d.horizontal_ratio, ground_targets=d.ground_targets, pose_targets=d.pose_targets)
 
     def test_invalid_edges_and_large_distance_weights(self):
         for pairs in ([[1,1]],[[0,17]],[[2,1]],[[0,1],[0,1]]):

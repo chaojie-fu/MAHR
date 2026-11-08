@@ -100,8 +100,10 @@ computation separate from file export.
 | `normalization.py` | Skeleton-height estimation and edge denominator floors |
 | `kinematics.py` | Mesh-free MuJoCo FK, body origins, and landmark Jacobians |
 | `graph.py` | Graph topology, ground-height relations, proximity weights, and edge derivatives |
+| `ground.py` | Absolute root correction bounds, position prior, and exact flat-ground elimination |
+| `pose.py` | Semantic bone directions and the independent first-stage pose objective |
 | `objective.py` | Losses, analytic gradients, and a shared `LossBreakdown` |
-| `solver.py` | `Settings`, sequential state, dynamic bounds, and L-BFGS-B calls |
+| `solver.py` | `Settings`, sequential state, dynamic bounds, and flat/terrain optimizer calls |
 | `pipeline.py` | Preparation, solving, result composition, and aggregate statistics |
 | `batch.py` | Motion discovery, sequential task execution, output paths, and failure manifests |
 | `trajectory.py` | In-memory trajectories, output format, and explicit export |
@@ -112,7 +114,8 @@ computation separate from file export.
 unittest framework. Generated artifacts belong in the Git-ignored `results/` directory.
 
 `PreparedMotion` contains the robot, graph, normalization scales, source vectors, motion,
-horizontal scale ratio, initial state, posture reference, asset path, and metadata.
+height-based horizontal scale ratio, ground XY targets, pose segments and source direction targets, initial state, posture reference,
+asset path, and metadata.
 Preparation explicitly queries reference positions rather than reading MuJoCo state
 that depends on the previous FK call.
 
@@ -125,8 +128,8 @@ initial state, independently of the last FK evaluation.
 
 - Each `landmark_pairs` row declares `(source joint, target body)`. Names on each side
   must be unique. Do not restore two independent lists that rely on positional alignment.
-- Ground is a separate height relation controlled by `include_ground`, not an ordinary
-  landmark in the mapping.
+- Ground relations are controlled by `include_ground`, not ordinary landmarks in
+  the mapping. Each relation contributes both vertical and world-XY residuals.
 - `toes` and `source_toes` each specify two distinct calibration markers. These markers
   do not have to belong to the graph's landmarks.
 - URDF and source-reference paths are relative to the supplied asset root.
@@ -169,9 +172,10 @@ For inclusion in comparison videos, also update the display-name table in
 ### Input and Normalization
 
 Convert source BVH coordinates from Y-up to Z-up with the `(z, x, y)` permutation.
-Preserve source length units. Scale horizontal root displacement by the ratio of target
-to source reference-pose horizontal toe separation. Root rotation follows the source;
-joint angles and root height are optimized.
+Preserve source length units. Use the ratio of target to source reference skeleton
+heights to scale both source world root XY and source world landmark XY. Root rotation
+follows the source; optimize joint angles, world root height, and a bounded XY
+correction to the scaled root path. Toe spacing no longer determines horizontal scale.
 
 - Source ground calibration is enabled by default. Compute the minimum toe height per
   frame across the full input, take its 5th percentile as a static ground plane, then
@@ -181,10 +185,46 @@ joint angles and root height are optimized.
   minus the lowest toe marker z; do not use the visual mesh bounding box.
 - A body-to-ground edge has z equal to negative height. Clamp positive source components
   caused by penetration to zero before normalization. Preserve the sign of target edges.
-- Compute proximity weights as `softmax(-5 * length)` using normalized source edge lengths.
-  Preserve this convention, which differs from the paper's use of raw distances.
+- Compute proximity weights as `softmax(-beta * length)` using normalized source edge
+  lengths. The default `Settings.proximity_coefficient` is 1, reduced from 5 to avoid
+  excessive differences between ground and body-edge weights. Zero gives uniform weights.
+  Keep normalized lengths rather than replacing them with raw distances.
 - For the source reference pose, subtract the minimum toe height, then add 5% of the resulting
   pelvis height. Target initial root height is `-1.05` times the lowest reference toe z.
+
+### Ground Grid and Root XY Correction
+
+The accepted default is height scaling plus fixed-world ground-grid relations and
+root XY correction. Four equally weighted fixed lattice corners around each source
+landmark reduce exactly to a world-XY point residual: corresponding source and target
+anchors cancel. Evaluate that reduction directly; grid density does not affect this
+objective, and the renderer's checker size is unrelated to optimization.
+
+- For each existing ground edge, add the XY displacement between its robot landmark
+  and the height-scaled source world landmark. Divide by 5% of target height and use
+  that edge's existing proximity weight (multiplier 1). Preserve body edges, vertical
+  ground residuals, and their normalization. Source drift remains in these targets.
+- Root correction has per-axis absolute bounds of 20% of target height and a position
+  penalty of `0.1 * ||correction / height||^2`. There are no correction speed bounds,
+  velocity penalties, or acceleration penalties. The user selected this relaxation
+  after complete-trajectory ablations demonstrated that correction history contributed
+  to folded-leg and inverted-torso solutions. These bounds concern the correction,
+  not overall locomotion. Joint and root-Z continuity uses soft temporal penalties,
+  without hard inter-frame speed or step bounds.
+- On flat or constant-height terrain, solve the separable box-constrained XY quadratic
+  analytically during each objective evaluation. Use its envelope gradient for joints
+  and height, retaining the original L-BFGS-B dimension and one FK per evaluation.
+  On varying terrain, jointly optimize XY because terrain heights depend on it.
+- `FrameObjective` accepts full internal states `[joints, world Z, correction X/Y]`.
+  A shorter `[joints, world Z]` state requests exact elimination on horizontal ground.
+  Histories use full states; original temporal terms use joints/Z and the posture prior
+  uses joints only.
+- Export corrected world root positions. `Trajectory.coordinates` retains its existing
+  joint-plus-height layout; XY correction is not a robot joint or a prescribed rotation.
+  CLI, batch, and Python entry points share this default without an extra switch.
+  Low-level callers of `Retargeter` must provide `body_height`, compiled `pose`,
+  `root_xy`, `ground_targets`, and per-frame `pose_targets`; `solve` returns `(coordinates, corrections, stats)`.
+  `Trajectory.from_solution` now takes solved world root XY rather than a scale ratio.
 
 ### SMPL-X Input
 
@@ -234,35 +274,74 @@ it must not use a BVH reference with different body proportions.
 
 ### Objective and Solver
 
-Each frame directly optimizes graph matching, regularization, temporal terms, and
-posture with bounded L-BFGS-B. Initialize the first frame from `initial_pose` and
-subsequent frames from the previous accepted solution. Store source joint positions
-and root rotations; full joint rotations are temporary FK data, not retained motion
-state or optimization targets.
+Each frame first fits source body pose, then refines the graph while retaining the
+source-pose objective. The first stage uses bounded L-BFGS-B over URDF joint ranges,
+independently of graph-result history. Warm-start it from the previous first-stage
+solution; when its objective exceeds `pose_restart_threshold=0.1`, also try the
+declared initial pose and retain the lower-loss result. The first frame uses that
+initial pose. A `1e-4` squared distance to `posture_reference` breaks joint-coordinate
+ambiguities in this stage. The first-stage pose is an optimizer seed, not an exported
+trajectory, and does not have inter-frame velocity bounds.
+
+`RobotConfig.pose_pairs` declares twelve directed semantic segments by default: torso,
+shoulder axis, two pelvis-to-knee proxies, two shins, two upper arms, two elbow-to-hand
+segments, and two ankle-to-toe directions. Both BVH and SMPL-X use actual source joint
+positions in the prescribed root frame. Normalize each segment to remove bone length;
+minimize the mean squared difference of unit directions. Do not fit away root heading
+or use source foot-rotation channels as orientation targets. Missing or degenerate
+source segments fail explicitly; custom mappings must supply corresponding pose pairs.
+
+The second stage minimizes graph matching, ground XY relations, root correction,
+regularization, temporal terms, the static posture prior, and the same direction
+objective with `source_pose_weight=1`. Share its FK and positional Jacobian with
+graph evaluation. Use bounded L-BFGS-B with analytic XY elimination on horizontal
+ground, and SLSQP with full derivatives on varying terrain. Initialize each frame
+from the complete first-stage joint solution and the preceding final root height.
+Do not project the pose into a box around the previous graph result. Preserve URDF
+joint limits, root-height/terrain-clearance limits, and absolute XY correction bounds.
+Continuity uses the original first- and second-order temporal penalties, with their
+frame-rate scaling; neither joints nor root height have hard speed or step bounds.
+The user selected this default after the Berkeley 85_04 ground-reaching diagnosis:
+velocity-box projection discarded a better first-stage arm pose and perpetuated a
+poor local solution. Larger frame-to-frame changes are now possible and must be
+measured rather than treated as violations of the removed bounds.
+Store source joint positions and root rotations; full source joint rotations remain
+temporary FK data, not retained motion state or optimization targets.
 
 `FrameObjective` defines the numerical objective, analytic gradient, and diagnostics.
 Do not duplicate loss formulas in the solver. `LossBreakdown` contains graph matching,
-clipped regularization, temporal terms, and the posture prior.
+clipped regularization, temporal terms, the static posture prior, ground XY, root XY,
+and retained source-pose matching. Per-frame reports include first-stage loss,
+convergence, evaluation count, timing, restart flag, and seed projection. A failed
+first stage marks the frame unsuccessful even if graph refinement converges.
 
 | Component | Default value or behavior |
 | --- | --- |
 | Clipped-square regularizer | Weight `0.001`, clipping at `±0.78`, including root height |
-| Non-saturating posture prior | Weight `0.003`, joints only, relative to the independent `posture_reference` |
+| Static non-saturating posture prior | Weight `0.003`, joints only, relative to the independent `posture_reference` |
+| Retained source pose | Weight `1`, mean squared unit-direction error across the configured segments |
+| Proximity softmax coefficient | `1`, applied to normalized source edge lengths |
 | First-order temporal term | Weight `0.02`, scaled by `((1/120) / dt)^2` |
 | Second-order temporal term | Weight `0.1`, scaled by `((1/120) / dt)^4` |
 | Joint bounds | URDF limits; unbounded scalar joints retain `[-π, π]` |
 | Flat-ground root-height bounds | `[0, 4]` meters |
-| Inter-frame bounds | Intersection of the `50/120` step limit and velocity limits |
-| Joint velocity limit | `8 rad/s` |
-| Root-height velocity limit | `2 m/s` |
-| Optimizer | L-BFGS-B with analytic value/gradient; declared initialization for the first frame, warm start thereafter |
+| Inter-frame bounds | None; continuity is encouraged by temporal penalties |
+| Optimizer | Independent L-BFGS-B pose fit, then pose-guided L-BFGS-B on horizontal ground or SLSQP on varying terrain |
 
 Other solver defaults are defined by `Settings` in `solver.py`. URDF kinematics supports
 independent scalar joints only; reject mimic and multi-DoF joints rather than silently
 changing their interpretation.
 
-Target ground-penetration penalties, inverted-foot penalties, source foot-rotation
-matching, and multi-start experiments have been removed from the default pipeline.
+`Settings.step_limit`, `Settings.max_joint_velocity`, and `Settings.max_root_velocity`
+were removed with the velocity box. Remove these keywords from Python callers;
+`temporal_weight` and `acceleration_weight` control soft continuity. Per-frame
+`pose_seed_projection` was removed because the first-stage pose is no longer clipped.
+The report's `max_joint_velocity` and `max_root_velocity` are measured speeds, not
+enforced limits; the latter measures world-Z speed. Retain these diagnostics when
+comparing complete trajectories.
+
+Target ground-penetration penalties, inverted-foot penalties, and source foot-rotation
+matching remain absent from the default pipeline.
 The user considers source foot rotations potentially unreliable; do not reintroduce
 them as targets. Graph ground-height matching remains active and is distinct from the
 removed additional ground penalties.
@@ -270,13 +349,13 @@ removed additional ground penalties.
 ### Target Terrain
 
 `HeightMap` is the Python configuration and data object accepted by `prepare`, `run`,
-and `run_batch` through `terrain=`. Omission keeps the flat-ground arithmetic and
-default trajectories unchanged. PNG input uses 8-bit grayscale samples; the numerical
+and `run_batch` through `terrain=`. Omission uses the default flat-ground solve.
+PNG input uses 8-bit grayscale samples; the numerical
 API also accepts arbitrary finite height arrays in meters, including negative heights.
 The map center XY and base Z are configurable independently of its half extents.
 
 - Query terrain at each ground-edge landmark's world XY, including the scaled root
-  translation and root rotation. A target ground edge is still vertical:
+  translation, optimized XY correction, and prescribed root rotation. Its vertical component is:
   `height_map(world_x, world_y) - landmark_world_z`.
 - Use continuous piecewise planar interpolation with the same cell diagonal as MuJoCo
   height fields. In image coordinates, the first triangle has `u + v <= 1`.
@@ -285,14 +364,18 @@ The map center XY and base Z are configurable independently of its half extents.
   for finite-difference checks. Clamp out-of-map queries and zero the derivative along
   each clamped coordinate. The rendered height field covers only the configured footprint.
 - Add `dh/dx * dx/dq + dh/dy * dy/dq` to each ground-edge joint derivative. Do not treat
-  sampled terrain heights as constants during optimization. Root XY and rotation remain
-  prescribed by the source; only joint angles and root height are optimized.
+  sampled terrain heights as constants during optimization. Include terrain slopes in
+  the correction-XY derivatives as well. Only root rotation remains prescribed.
 - Keep source calibration and reference edge denominators on horizontal ground. The
   target terrain changes the target graph, not skeleton normalization or source vectors.
 - Initialize root height above the first root XY's terrain sample. Root bounds are
   `[ground_at_root, ground_at_root + 4]`; the root component of clipped regularization
-  uses height above that sample. Temporal terms and velocity bounds use world heights.
-  Report an error if terrain bounds and inter-frame velocity bounds have no intersection.
+  uses height above that sample. Temporal terms use world heights.
+  For varying terrain, constrain this clearance with analytic nonlinear inequalities
+  at the corrected root XY, within the global terrain height bounds. A box at the
+  uncorrected root would impose the wrong constraint.
+  Reject a returned state that violates clearance; retain optimizer failure diagnostics.
+  Constant maps use the same reduced solve as flat ground (zero maps are identical).
 - Export the sampled map, half extents, and origin to a compressed `.terrain.npz` sidecar.
   The trajectory JSON's optional `terrain` field is the sidecar basename. Playback reads
   that file relative to the trajectory, preserving the map after moving results. Missing
@@ -394,6 +477,105 @@ using FFprobe. Optional ground grids and camera distance affect presentation onl
 
 ## Validation and Recorded Results
 
+### Soft continuity default selected on 2026-11-06
+
+The user selected removal of the final-stage inter-frame speed bounds while keeping
+temporal penalties and first-stage pose initialization. The Berkeley 85_04 diagnosis
+showed that clipping a better arm pose into the previous-frame velocity box preserved
+an inferior local solution. The default now seeds graph refinement with the complete
+first-stage joint pose. Absolute joint, root-clearance, and XY correction bounds remain.
+
+All 60 unit tests, compilation, and whitespace checks passed. Complete 85_04 on all
+eight robots, plus both bundled BVHs on flat ground and the documented ramp, covered
+40 trajectories and 33544 frames with no first- or second-stage convergence failures.
+Static bounds and first/middle/last analytic gradients passed; maximum sampled
+gradient error was `1.72e-9`. Records are in `results/soft_continuity_20261106/`.
+
+In the complete Berkeley 85_04 trajectory, left-hand marker height at 14.5 seconds
+changed from 35.28 to 9.87 cm, and mean body-direction RMS changed from 23.75 to
+20.68 degrees. Seven of eight robots improved this mean on 85_04; G1 worsened from
+9.76 to 10.26 degrees. These are complete-trajectory results, unlike the earlier
+single-frame diagnostic. They do not establish improvements on all CMU motions.
+
+Soft penalties do not guarantee small joint changes. Berkeley has a 135-degree
+left-shoulder-pitch change at 14.1083 seconds; 36 frame transitions contain a joint
+change above 20 degrees. H1, N1, X1, Atlas, and iCub also have large changes on 85_04.
+Do not describe this change as eliminating discontinuities or producing executable
+robot motion. Preserve these measured tradeoffs when presenting the selected default.
+
+### Initial pose-guided default on 2026-11-06, before velocity-bound removal
+
+The user requested pose initialization with a retained source-pose term, relaxed
+root-XY history, and less extreme proximity weights. The selected coefficients are
+`source_pose_weight=1` and `proximity_coefficient=1`. Complete X1 85_04, G1 85_12,
+and GR1 85_07 comparisons covered softmax coefficients 0.5, 1, 2, and 5 and retained
+pose weights 0, 0.3, 1, and 3. Weight zero keeps initialization and tests removal of
+the retained second-stage objective. Smaller beta and stronger pose weights generally
+improve orientation but can increase support sliding; do not report a uniform gain.
+
+All 14 CMU subject 85 motions on all eight robots completed both stages: 191280
+frames, no convergence failures. Joint/Z bounds and speeds, absolute XY correction
+bounds, finite outputs, and first/middle/last full gradients passed; maximum sampled
+gradient error was `8.97e-9`. Both complete bundled BVHs added 6552 flat-ground and
+6552 ramp frames with all eight robots, no failures, and gradient error below `1.56e-8`.
+All 59 unit tests, compilation, and whitespace checks passed. Runtime snapshots,
+parameter comparisons, complete trajectories, diagnostics, and 14 synchronized
+30-Hz comparison clips are under `results/pose_guided_20261106/`.
+
+Every CMU motion/robot pair improved mean body-direction RMS. The frame-weighted
+mean changed from 20.84 to 12.79 degrees; frames above 60 degrees changed from 7438
+to 284. Ankle-to-toe direction errors above 90 degrees changed from 2981 frames to
+zero. These positional metrics cannot detect rotation about the ankle-to-toe axis.
+Atlas 85_14 retains 65.52 degrees at its original selected peak, and four trajectories
+worsen body-error p95, particularly iCub 85_05 (26.38 to 45.83 degrees).
+
+Source-only support masks match the preceding evaluation definition. Aggregate
+toe-marker sliding RMS changed from 0.1458 to 0.1298 m/s, but per-robot aggregates
+worsened for GR1, N1, and X1, and sliding increased in 69 motion/robot pairs. Preserve
+these tradeoffs when reporting the new default. The result is not a guarantee of
+dynamic feasibility or elimination of every local solution.
+
+With one warmup and seven alternating isolated X1 Dance solves (500 frames,
+OpenBLAS=1, no concurrent rendering), median solve time changed from 3.793 to
+4.449 seconds (+17.3%). This includes both stages but excludes preparation/export.
+
+### Ground-grid selection and regression reference
+
+The 2026-11-05 ablation under `results/ground_grid_20261105/` covers both bundled
+BVHs and complete CMU 85_03 on all eight robots, with toe-spacing/height scaling
+and baseline/fixed-XY/corrected-XY variants: 195072 robot frames, all converged.
+The user selected **height scaling + grid + XY correction** as the new default.
+Historical graph-only references are the `grid_root` directories within `bvh_dance_height`,
+`bvh_smpl_height`, and `85_03_height`. The old prototype and runtime are archived
+under that result directory's `implementation/`; keep duplicate experimental
+solvers out of the package and repository maintenance tools. These preceding-default
+trajectories are comparison baselines, not exact-equality targets for the pose-guided default.
+
+On 85_03 this choice reduced support toe-marker speed RMS by 85.4% to 91.3%.
+Source-only support proxies used toe height at most 4% of source height, speed
+at most 15% of height per second, and duration at least 0.1 seconds; 10% and 20%
+speed thresholds were also checked. These labels do not enter optimization.
+Measure mapped toe landmarks separately from calibration bodies (GR1 differs).
+This measures marker sliding, not contact-patch friction or dynamic feasibility.
+The second bundled clip still has pose regressions for X1 and Berkeley relative
+to the preceding default; preserve that limitation when reporting improvements.
+
+With one warmup and seven alternating X1 Dance solves (500 frames, OpenBLAS=1,
+no concurrent rendering), the prototype's selected scheme took a median 3.175 s
+versus 1.155 s for the preceding default. These are local measurements. Historical
+videos use 640-by-480 views at 30 Hz; 107 videos passed timestamp and decode checks.
+
+Promotion to the default passed 53 unit tests and full-trajectory comparisons on
+both bundled BVHs plus CMU 85_03 across all eight robots: 32512 frames converged
+with exactly zero joint, root-position, or root-quaternion difference from the
+selected prototype. Both complete BVHs on a ramp added 6552 converged frames;
+a real SMPL-X terrain CLI batch added 960 frames across all eight robots.
+Joint/root bounds and velocities passed, and sampled full-state analytic-gradient
+error was at most `2.64e-8`. Zero-height maps match the flat solve exactly.
+An exported X1 terrain trajectory also passed a 30-Hz rendering smoke check
+(125 frames, 320 by 240) and complete video decoding. Records are in
+`results/default_grid_20261105/validation.json`.
+
 From the repository root, in the environment documented in README:
 
 ```bash
@@ -403,7 +585,7 @@ git diff --check
 ```
 
 The tests cover FK and objective gradients, loss decomposition, buffer reuse,
-configuration and pose isolation, in-memory results and export, temporal velocity bounds,
+configuration and pose isolation, in-memory results and export, static bounds and soft continuity,
 normalization, source ground calibration, and independence from source foot-rotation
 channels, the completeness of bundled model assets, terrain gradients and rendered
 surfaces (including submillimeter spans), portable terrain export, batch discovery,
@@ -432,10 +614,12 @@ new directory to avoid overwriting the baseline.
 Orientation initialization was evaluated and removed on 2026-11-05. On the two CMU
 subject 85 clips, its final orientation RMS improvements were about 0.01 to 0.13
 degrees, while a controlled X1 Dance benchmark approximately doubled solve time.
-Graph refinement largely undid the initialization benefit. Keep the runtime focused
-on direct graph optimization; do not retain orientation mappings, angular Jacobians,
-initialization switches, or stage-specific statistics. Historical comparisons remain
-in ignored result artifacts.
+Graph refinement largely undid the initialization benefit. Those results describe the
+superseded initialization-only method. On 2026-11-06 the user requested pose
+initialization with a retained pose objective during graph refinement. This replaces
+the preceding restriction on staged optimization. Historical comparisons remain
+in ignored result artifacts; do not restore the removed source SO(3) mappings or
+rotational Jacobians.
 
 Single-stage validation after removal on 2026-11-05 passed all 44 tests. Both bundled
 BVHs and the complete CMU `85_03` and `85_12` clips passed on all eight robots:

@@ -47,23 +47,26 @@ def main():
         assert np.all(q[:, :-1] <= robot.upper+1e-8)
         assert np.all(q[:, -1] >= ground-1e-8)
         assert np.all(q[:, -1] <= ground+4.+1e-8)
-        if len(q) > 1:
-            assert np.max(abs(np.diff(q[:,:-1], axis=0)))*clip.fps <= settings.max_joint_velocity+1e-7
-            assert np.max(abs(np.diff(q[:,-1])))*clip.fps <= settings.max_root_velocity+1e-7
+        root_reference = clip.positions[:, 0, :2] * data.horizontal_ratio
+        corrections = trajectory.root_positions[:, :2] - root_reference
+        height = data.normalization['target_height']
+        assert abs(corrections).max() <= settings.root_correction_bound_ratio*height+1e-8
+        states = np.column_stack((q, corrections))
         checked = sorted(set((0, len(q)//2, len(q)-1)))
         max_error = 0.
         for index in checked:
-            x = q[index].copy()
-            relative = x.copy()
+            x = states[index].copy()
+            relative = x[:robot.dofs+1].copy()
             if terrain is not None:
                 relative[-1] -= ground[index]
-            x[np.abs(np.abs(relative)-CLIPPED_POSE_LIMIT)<1e-4] += .001
+            x[:robot.dofs+1][np.abs(np.abs(relative)-CLIPPED_POSE_LIMIT)<1e-4] += .001
             obj = FrameObjective(robot, data.edges, data.scales, data.source_vectors[index],
                                  clip.root_rotations[index], settings,
                                  posture_reference=data.posture_reference,
-                                 previous=q[index-1] if index else None,
-                                 older=q[index-2] if index>1 else None, frame_dt=1/clip.fps,
-                                 terrain=terrain, root_xy=trajectory.root_positions[index, :2])
+                                 previous=states[index-1] if index else None,
+                                 older=states[index-2] if index>1 else None, frame_dt=1/clip.fps,
+                                 terrain=terrain, root_xy=root_reference[index],
+                                 body_height=height, ground_targets=data.ground_targets[index], pose=data.pose, pose_target=data.pose_targets[index])
             _, gradient = obj.value_gradient(x)
             numeric = approx_derivative(obj.value, x, abs_step=1e-8).ravel()
             max_error = max(max_error, float(np.max(abs(gradient-numeric))))

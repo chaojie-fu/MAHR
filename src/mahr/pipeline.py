@@ -15,6 +15,7 @@ from .source_ground import calibrate_source_ground
 from .trajectory import Trajectory
 from .terrain import HeightMap
 from .smplx import SMPLXSource
+from .pose import PoseDirections
 
 
 @dataclass
@@ -23,6 +24,9 @@ class PreparedMotion:
     edges: EdgeSpace
     scales: np.ndarray
     source_vectors: np.ndarray
+    pose: PoseDirections
+    pose_targets: np.ndarray
+    ground_targets: np.ndarray
     motion: Motion
     horizontal_ratio: float
     initial: np.ndarray
@@ -79,23 +83,31 @@ def prepare(asset_root, motion_path, *, robot='g1', frame_slice=slice(None),
         raise ValueError('No frames selected')
     source_height = skeleton_height(
         rest.positions[0], rest.positions[0, [rest.names.index(n) for n in preset.source_toes]])
-    vectors, foot_distance = prepare_source(
+    vectors = prepare_source(
         motion, rest, preset.source_landmarks, preset.source_toes, edges,
         min_edge_ratio=min_edge_ratio, body_height=source_height)
-    ratio = np.linalg.norm(toe_positions[0, :2] - toe_positions[1, :2]) / foot_distance
+    ratio = target_height / source_height
+    pose = PoseDirections(preset.source_landmarks, preset.pose_pairs, body_height=target_height)
+    ids = [motion.names.index(name) for name in preset.source_landmarks]
+    local = np.einsum('fkj,fji->fki', motion.positions[:, ids] - motion.positions[:, :1], motion.root_rotations)
+    pose_targets = pose.targets(local)
+    ground_ids = [motion.names.index(preset.source_landmarks[i]) for i in edges.ground_sources]
+    ground_targets = motion.positions[:, ground_ids, :2] * ratio
     if terrain is not None:
         root_height += float(terrain.sample(motion.positions[0, 0, :2] * ratio))
     normalization = dict(
         min_edge_ratio=min_edge_ratio,
         height_definition='rest joint/body origins: maximum z minus minimum toe z',
         source_height=source_height, target_height=target_height,
+        horizontal_scaling='reference_height', horizontal_ratio=ratio,
         source_ground=ground_calibration,
         source_denominator_floor=min_edge_ratio * source_height,
         target_denominator_floor=min_edge_ratio * target_height,
         target_min_denominator=float(scales.min()))
     return PreparedMotion(
         robot=robot, edges=edges, scales=scales, source_vectors=vectors, motion=motion,
-        horizontal_ratio=ratio, initial=np.r_[qinitial, root_height],
+        pose=pose, pose_targets=pose_targets,
+        ground_targets=ground_targets, horizontal_ratio=ratio, initial=np.r_[qinitial, root_height],
         posture_reference=posture_reference, normalization=normalization, urdf=preset.urdf,
         preparation_seconds=perf_counter() - start, terrain=terrain)
 
@@ -105,24 +117,33 @@ def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetRes
     start = perf_counter()
     settings = settings or Settings()
     motion = data.motion
-    coordinates, stats = Retargeter(
+    root_xy = motion.positions[:, 0, :2] * data.horizontal_ratio
+    coordinates, corrections, stats = Retargeter(
         data.robot, data.edges, data.scales, settings, posture_reference=data.posture_reference,
-        terrain=data.terrain
+        pose=data.pose,
+        terrain=data.terrain, body_height=data.normalization['target_height']
     ).solve(data.source_vectors, motion.root_rotations, data.initial, frame_dt=1 / motion.fps,
-            root_xy=motion.positions[:, 0, :2] * data.horizontal_ratio if data.terrain is not None else None)
+            root_xy=root_xy, ground_targets=data.ground_targets, pose_targets=data.pose_targets)
     solve_seconds = perf_counter() - start
-    trajectory = Trajectory.from_solution(data.robot.names, coordinates, motion, data.horizontal_ratio)
+    trajectory = Trajectory.from_solution(data.robot.names, coordinates, motion, root_xy + corrections)
     delta = np.diff(trajectory.joint_positions, axis=0)
     second = np.diff(trajectory.joint_positions, n=2, axis=0)
     report = dict(
         settings=asdict(settings), normalization=data.normalization,
         max_joint_step=float(np.max(np.abs(delta))) if len(delta) else 0.,
         max_joint_velocity=float(np.max(np.abs(delta)) * motion.fps) if len(delta) else 0.,
+        max_root_velocity=float(np.max(np.abs(np.diff(trajectory.root_positions[:, 2]))) * motion.fps) if len(delta) else 0.,
         max_joint_acceleration=float(np.max(np.abs(second)) * motion.fps**2) if len(second) else 0.,
         frames=len(stats), preparation_seconds=data.preparation_seconds,
         solve_seconds=solve_seconds, total_seconds=data.preparation_seconds + perf_counter() - start,
         fps=len(stats) / solve_seconds,
         mean_graph_loss=float(np.mean([s['graph_loss'] for s in stats])),
+        mean_ground_xy_loss=float(np.mean([s['ground_xy_loss'] for s in stats])),
+        mean_root_xy_loss=float(np.mean([s['root_xy_loss'] for s in stats])),
+        mean_source_pose_loss=float(np.mean([s['source_pose_loss'] for s in stats])),
+        pose_initialization_seconds=float(sum(s['pose_seconds'] for s in stats)),
+        unsuccessful_pose_frames=sum(not s['pose_success'] for s in stats),
+        max_root_xy_correction=float(np.max(np.abs(corrections))),
         mean_loss=float(np.mean([s['loss'] for s in stats])),
         unsuccessful_frames=sum(not s['success'] for s in stats), frames_detail=stats)
     if data.terrain is not None:

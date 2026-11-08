@@ -36,6 +36,7 @@ class PipelineTests(unittest.TestCase):
         # A repeated solve starts from declared state, independent of MuJoCo's last FK evaluation.
         repeated = solve(result.prepared)
         assert_array_equal(repeated.trajectory.coordinates, trajectory.coordinates)
+        assert_array_equal(repeated.trajectory.root_positions, trajectory.root_positions)
 
     def test_pose_roles_are_independent(self):
         class CustomX1(AgibotX1Config):
@@ -50,7 +51,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(custom.posture_reference[knee], .2)
         obj = FrameObjective(custom.robot, custom.edges, custom.scales, custom.source_vectors[0],
                              custom.motion.root_rotations[0], Settings(),
-                             posture_reference=custom.posture_reference)
+                             posture_reference=custom.posture_reference, body_height=custom.normalization['target_height'],
+                             ground_targets=custom.ground_targets[0],
+                             root_xy=custom.motion.positions[0,0,:2]*custom.horizontal_ratio, pose=custom.pose, pose_target=custom.pose_targets[0])
         reference = np.r_[custom.posture_reference, custom.initial[-1]]
         self.assertEqual(obj.posture_terms(reference)[0], 0.)
         custom.robot.evaluate(custom.initial[:-1] + .1)
