@@ -48,7 +48,8 @@ working conventions here.
 
 ## Dependencies and Assets
 
-The runtime depends on NumPy, SciPy, MuJoCo, and Pillow (PNG height-map loading).
+The runtime depends on NumPy, SciPy, MuJoCo, Pillow (PNG height-map loading), and
+OSQP (conditional trajectory repair).
 Bundled resources live in `assets/`:
 `robots/` contains the eight configured URDFs, their referenced meshes, and available
 model-specific license files; `motions/` contains the two reproduction clips and standing
@@ -62,8 +63,9 @@ with the same layout. The Python API's first argument is `asset_root`. Tests use
 assets by default and accept `MAHR_ASSET_ROOT` for an explicit override. The documented
 installation is editable; a non-editable installation needs an explicit asset root.
 
-The validated environment is Python 3.10.20, NumPy 2.2.6, SciPy 1.15.3, and MuJoCo 3.9.0.
-README uses these dependency versions for reproduction. The current `uv.lock` selects MuJoCo 3.17.0,
+The validated environment is Python 3.10.20, NumPy 2.2.6, SciPy 1.15.3, MuJoCo 3.9.0,
+and OSQP 1.1.1. README uses these dependency versions for reproduction. The current
+`uv.lock` selects MuJoCo 3.17.0 and OSQP 1.1.3,
 so it does not describe the same validated environment. Revalidate when upgrading
 dependencies or aligning the lockfile.
 
@@ -103,7 +105,10 @@ computation separate from file export.
 | `ground.py` | Absolute root correction bounds, position prior, and exact flat-ground elimination |
 | `pose.py` | Semantic bone directions and the independent first-stage pose objective |
 | `objective.py` | Losses, analytic gradients, and a shared `LossBreakdown` |
-| `solver.py` | `Settings`, sequential state, dynamic bounds, and flat/terrain optimizer calls |
+| `quality.py` | `RecoverySettings` and source-aware checks of a single output trajectory |
+| `recovery.py` | Triggered frame restarts, repair-window selection, and acceptance diagnostics |
+| `window.py` | Sparse Gauss–Newton trajectory repair using the shared frame objective |
+| `solver.py` | `Settings`, sequential state, optimizer calls, and recovery integration |
 | `pipeline.py` | Preparation, solving, result composition, and aggregate statistics |
 | `batch.py` | Motion discovery, sequential task execution, output paths, and failure manifests |
 | `trajectory.py` | In-memory trajectories, output format, and explicit export |
@@ -210,7 +215,8 @@ objective, and the renderer's checker size is unrelated to optimization.
   after complete-trajectory ablations demonstrated that correction history contributed
   to folded-leg and inverted-torso solutions. These bounds concern the correction,
   not overall locomotion. Joint and root-Z continuity uses soft temporal penalties,
-  without hard inter-frame speed or step bounds.
+  without hard inter-frame speed or step bounds in the normal frame solve.
+  Conditional repair windows apply the quality thresholds described below.
 - On flat or constant-height terrain, solve the separable box-constrained XY quadratic
   analytically during each objective evaluation. Use its envelope gradient for joints
   and height, retaining the original L-BFGS-B dimension and one FK per evaluation.
@@ -300,7 +306,8 @@ from the complete first-stage joint solution and the preceding final root height
 Do not project the pose into a box around the previous graph result. Preserve URDF
 joint limits, root-height/terrain-clearance limits, and absolute XY correction bounds.
 Continuity uses the original first- and second-order temporal penalties, with their
-frame-rate scaling; neither joints nor root height have hard speed or step bounds.
+frame-rate scaling. The normal frame solve has no hard speed or step bounds;
+conditional trajectory repair adds source-aware joint bounds within suspect windows.
 The user selected this default after the Berkeley 85_04 ground-reaching diagnosis:
 velocity-box projection discarded a better first-stage arm pose and perpetuated a
 poor local solution. Larger frame-to-frame changes are now possible and must be
@@ -312,7 +319,7 @@ temporary FK data, not retained motion state or optimization targets.
 Do not duplicate loss formulas in the solver. `LossBreakdown` contains graph matching,
 clipped regularization, temporal terms, the static posture prior, ground XY, root XY,
 and retained source-pose matching. Per-frame reports include first-stage loss,
-convergence, evaluation count, timing, restart flag, and seed projection. A failed
+convergence, evaluation count, timing, and restart flag. A failed
 first stage marks the frame unsuccessful even if graph refinement converges.
 
 | Component | Default value or behavior |
@@ -325,7 +332,7 @@ first stage marks the frame unsuccessful even if graph refinement converges.
 | Second-order temporal term | Weight `0.1`, scaled by `((1/120) / dt)^4` |
 | Joint bounds | URDF limits; unbounded scalar joints retain `[-π, π]` |
 | Flat-ground root-height bounds | `[0, 4]` meters |
-| Inter-frame bounds | None; continuity is encouraged by temporal penalties |
+| Inter-frame bounds | None in the normal frame solve; source-aware joint velocity/acceleration bounds during conditional window repair |
 | Optimizer | Independent L-BFGS-B pose fit, then pose-guided L-BFGS-B on horizontal ground or SLSQP on varying terrain |
 
 Other solver defaults are defined by `Settings` in `solver.py`. URDF kinematics supports
@@ -339,6 +346,68 @@ were removed with the velocity box. Remove these keywords from Python callers;
 The report's `max_joint_velocity` and `max_root_velocity` are measured speeds, not
 enforced limits; the latter measures world-Z speed. Retain these diagnostics when
 comparing complete trajectories.
+
+### Automatic Quality Checks and Conditional Recovery
+
+Recovery is enabled through `Settings.recovery`, a `RecoverySettings` dataclass.
+Use `Settings(recovery=RecoverySettings(enabled=False))` for a controlled comparison.
+Detection must use the unique normal graph result, source motion, accepted history,
+and numerical status. Do not solve an alternative merely to decide whether to trigger.
+The independent first-stage pose fitting described above remains unchanged.
+
+- Track raw scalar joint differences, not modulo-2π differences, because an apparent
+  wrap may still require a large commanded joint motion. The default speed threshold
+  is `max(16, 2 * (source_segment_speed + root_angular_speed))` radians/second.
+  Source segments relax thresholds only for their ancestor joints in the robot.
+  Acceleration uses `max(2000, 2 * (source_direction_second_difference / dt^2
+  + root_speed_change / dt))` radians/second². Slide coordinates use body height as
+  their unit scale. These are anomaly heuristics, not actuator limits.
+- Flag a segment error above 90° when sustained for 0.1 seconds or when its increase
+  exceeds 30° plus the source's angular change. Failed optimization and infeasibility
+  are independent signals. A flag indicates suspicion, not proof of a bad local minimum;
+  smooth inaccurate solutions below these thresholds can remain undetected.
+- Only after a trigger, try up to three distinct seeds: the latest reliable output,
+  neutral coordinates of the affected chain, and reflection of that chain about its
+  joint-range midpoint. Pure persistent-pose triggers have a 0.1-second restart cooldown.
+  Keep the original objective, bounds, and independently generated pose-stage history.
+- Restart acceptance requires fewer reasons or a meaningful severity reduction,
+  no segment error increase above 20° (`pose_regression`), and no graph, ground-XY, or total-loss increase
+  above 10% plus an absolute `1e-4` tolerance. A lower total loss alone is insufficient.
+- After the sequential pass, prioritize remaining suspicious frames by severity.
+  Start with a 0.5-second window, extending unreliable boundaries up to 2 seconds.
+  Fix two endpoint frames on each side that joins unchanged data. Optimize joints,
+  world Z, and XY correction together, preserving terrain clearance and static bounds.
+  Apply the detector's source-aware joint speed and acceleration bounds inside these
+  windows. Do not add root speed limits, XY temporal penalties, foot-inversion terms,
+  penetration penalties, or automatic changes to objective weights.
+- `FrameObjective.linearize` supplies the exact residual/Jacobian for sparse
+  Gauss–Newton QPs solved by OSQP. Reuse the frame objective's FK and graph derivatives;
+  normal frame solves need not assemble the residual Jacobian. Window temporal terms
+  use the same weights and frame-rate scaling as the original sequence objective.
+- If pose or loss guards reject a window, try a linear joint bridge between its
+  endpoints. If both seeds fail those guards, stop retrying that interval. Expand
+  windows for solver failures or absent quality improvement. Limit each trajectory to
+  64 window solves and each solve to 20 iterations. An iteration-limited candidate can
+  be accepted only after feasibility and quality checks; this is not proof of optimality.
+- Window acceptance checks each segment's maximum and mean error (10° allowance,
+  controlled independently by `window_pose_regression`),
+  average graph and ground-XY losses (10% plus `1e-4`), total original objective,
+  fewer suspect frames, and no new trigger reasons outside the window. Window-wide
+  pose guards can permit redistribution of error between frames; inspect local motion
+  as well as summary statistics when evaluating the method.
+- Record initial triggers, restart attempts, reliable-seed frame, every accepted or
+  rejected window, time spent, remaining flags, and budget exhaustion. Mark only frames
+  that actually changed as repaired. Recompute reported objective components using the
+  final repaired history. Numerical convergence and quality are separate: `failed 0`
+  can coexist with unresolved suspicious frames. Never silently claim all jumps fixed.
+
+On 2026-11-08 the user selected a 64-window budget and a 20° single-frame restart
+pose allowance. Keep the window pose allowance at 10°; the single-frame allowance
+is an increase in segment error relative to the original candidate, not a joint-step
+limit or an absolute pose-error threshold. Both settings use radians in Python.
+Previously `pose_regression` also controlled window acceptance; callers customizing
+both stages should now explicitly set both `pose_regression` and
+`window_pose_regression`. Earlier validation records below describe the prior defaults.
 
 Target ground-penetration penalties, inverted-foot penalties, and source foot-rotation
 matching remain absent from the default pipeline.
@@ -539,6 +608,126 @@ With one warmup and seven alternating isolated X1 Dance solves (500 frames,
 OpenBLAS=1, no concurrent rendering), median solve time changed from 3.793 to
 4.449 seconds (+17.3%). This includes both stages but excludes preparation/export.
 
+### Recovery default update validation (2026-11-08)
+
+The 64-window budget and 20° frame-restart allowance passed 72 unit tests. Tests
+explicitly accept a 15° frame pose tradeoff while rejecting a 15° window pose
+regression under the unchanged 10° window allowance. Complete trajectory validation
+covers both bundled BVHs on all eight robots, CMU 85_14 on all eight robots,
+Berkeley 85_03, and Atlas 85_12: 26 runs, 38048 frames, no numerical failures,
+and finite states within static bounds. The 16 BVH runs have no remaining flags.
+
+Across these runs, flags decrease from 477 under the previous defaults to 60.
+Berkeley 85_03 decreases from 16 to 0, Atlas 85_12 from 210 to 0, and Atlas 85_14
+from 120 to 0. Remaining flags are in 85_14: Berkeley 35, iCub 20, and N1 5.
+None of these runs exhausts the new budget. Rejected windows, including pose-guard
+rejections, still prevent recovery; do not interpret the new defaults as a continuity
+guarantee or generalize this selected regression to all fourteen CMU 85 clips.
+
+For N1 85_14, a fixed-history replay at zero-based frame 2556 accepts a restart
+with a maximum segment-error increase of 11.23° under the new 20° allowance.
+The selected joint step decreases from 312.06° to 2.24° and loss from 4.76968 to
+0.77055. The full rerun also has a 2.24° step at that frame, but a 308.92° step
+remains at frame 2562; Berkeley 85_14 retains a 135° step. Zero numerical failures
+and fewer flags do not imply that all severe jumps are fixed.
+
+Evidence is under `results/recovery_defaults_20261108/`: `REPORT.md`, `summary.json`,
+`guard_probe.json`, `tests.log`, `runtime_hashes.json`, and complete per-robot
+trajectory/statistics files under `motions/`. These are ignored validation artifacts.
+
+### Automatic recovery validation (2026-11-06)
+
+The current recovery implementation passed 71 unit tests, including single-output
+triggers, source-motion compensation, restart branch exploration, window rejection
+despite lower total loss, terrain clearance, and reported losses after history repair.
+Exact residual/Jacobian checks cover all eight robots on flat and varying terrain.
+An unflagged clip produces exactly the same trajectory with recovery enabled or disabled.
+
+Full-motion validation covers both bundled BVHs on flat ground and a ramp, plus complete
+SMPL-X CMU 85_04, for all eight robots: 40 runs and 33544 output frames. All numerical
+solves and static/terrain bounds passed. Reconstructing every exported state reproduced
+all quality flags and objective components, with maximum loss discrepancy `4.45e-16`.
+All 32 BVH runs have zero remaining flags. CMU 85_04 retains the following results:
+
+| Robot | Flagged frames, before → after | Maximum joint step in degrees, before → after |
+| --- | ---: | ---: |
+| G1 | 58 → 0 | 24.56 → 18.33 |
+| H1 | 126 → 8 | 118.63 → 118.63 |
+| GR1 | 34 → 0 | 17.66 → 14.92 |
+| N1 | 146 → 59 | 297.42 → 125.85 |
+| X1 | 157 → 0 | 140.79 → 18.40 |
+| Berkeley Humanoid Lite | 185 → 71 | 135.00 → 135.00 |
+| Atlas | 263 → 89 | 63.61 → 28.43 |
+| iCub | 106 → 2 | 83.22 → 21.13 |
+
+Berkeley's selected 14.108-second transition changes from 135.00° to 3.98°, while
+left-hand height at 14.5 seconds remains 9.87 cm. Windows near 16.97 and 18.98 seconds
+are rejected for pose regression, so a later 135° jump remains. N1's mean body-direction
+RMS worsens from 15.68° to 16.23° despite fewer discontinuities. The other seven robots
+improve this metric. These outcomes show partial recovery, not global continuity or
+proof of a globally optimal joint sequence. Zero flags is not zero pose error.
+
+With one warmup and seven alternating isolated G1 Dance solves (500 frames,
+OpenBLAS/OMP=1, no concurrent rendering), median solve time is 4.430 seconds before
+this change and 4.452 seconds with recovery (+0.5% in this local measurement), with
+bit-identical trajectories and no triggered retries. Complete 85_04 solves with
+recovery take 36.9–68.8 seconds in the eight-worker validation batch; this is not an
+isolated performance comparison. Evidence is under `results/automatic_recovery_20261106/`:
+`final.json`, `audit.json`, `benchmark.json`, `runtime_hashes.json`, and per-robot
+trajectory/statistics files. Results are ignored artifacts, not runtime dependencies.
+
+### Full CMU subject 85 recovery audit (2026-11-06)
+
+The subsequent audit reran all fourteen CMU subject 85 motions on eight robots, both
+with default recovery and with recovery disabled: 224 trajectories, 382560 robot frames,
+native 120 Hz, and no numerical failures. Runtime/defaults were not changed. Exported
+arrays and all quality reasons reproduced; sampled final-history losses differed by
+at most `8.89e-16`. Evidence is under `results/cmu85_recovery_audit_20261106/`.
+
+Default recovery reduces flagged frames from 6563 to 1653 and transitions above a raw
+20° joint step from 884 to 157. Flags remain in 37/112 default trajectories. The largest
+step does not improve (309.61° to 312.06°). Frame-weighted body RMS improves only from
+11.57° to 11.46°, with aggregate regressions for H1 and N1. Of 417 remaining frames
+above 45° body RMS, 104 are unflagged. These audit thresholds are indicators, not
+ground-truth labels; do not equate zero flags or solver convergence with correct motion.
+
+Controlled causal findings:
+
+- Twenty trajectories exhaust the sixteen-window budget; 895 remaining flags are
+  outside any attempted window, all on these budget-exhausted trajectories. Replaying
+  the same captured pre-window states with only the budget changed to 64 removes all
+  16 Berkeley/85_03 flags and all 210 Atlas/85_12 flags.
+- N1/85_03 retains its 110.19° jump with 80 rather than 20 iterations. Starting with a
+  two-second window and allowing four seconds removes all eleven flags and lowers
+  the largest full-clip step to 12.41°. Longer windows only partly help iCub/85_03.
+- N1/85_14 frame 2556 has a 312.06° shoulder step. All three actual restart seeds
+  find candidates near loss 0.77055 rather than 4.76968, with a 2.24° maximum step,
+  but a segment-error increase of 11.227° fails the 10° guard. Changing only that
+  allowance to 12° accepts the candidate in a single-frame replay. This is evidence
+  about acceptance, not a validated recommendation to globally change the default.
+- X1/85_07 retains an inverted torso branch despite accurate first-stage pose fitting.
+  At frame 718, removing temporal history exposes a much better spatial solution.
+  A same-window comparison on frames [500, 959), retaining weights, limits, endpoint
+  constraints and twenty iterations, gives 267 flags from the existing trajectory
+  seed and zero from an independent static multi-start IK trajectory seed. Torso
+  error at frame 718 changes from 173.64° to 4.48°, and window loss from 287.28 to
+  112.29. The diagnostic candidate passes the existing pose/loss guards. Static seed
+  generation costs an additional 33.3 seconds in this experiment; it is not runtime code.
+- Berkeley/85_06 is unflagged despite 45.39° body RMS: its largest segment error is
+  below 90° and its joint motion is smooth. A sixteen-start pose-only fit finds 42.15°
+  RMS within declared limits versus 15.59° after a diagnostic range relaxation that
+  violates thirteen original limits. Pelvis/head markers have fixed URDF chains, so
+  their direction cannot follow arbitrary source torso motion with prescribed root
+  rotation. Best-found IK values are not certified global lower bounds.
+
+Keep these mechanisms distinct: work budget, window boundaries, trajectory seed,
+acceptance tradeoffs, and representational limits require different responses.
+Detection must still operate on the single normal result; alternative solves are
+diagnostic/recovery work after a trigger. Do not silently promote artifact ablations
+or weaken guards based on one successful case. The report records thirteen frame
+probes, window replays, an independently audited 30-Hz comparison video, and all
+112 default plus 112 disabled trajectories. No full-subject videos were generated.
+
 ### Ground-grid selection and regression reference
 
 The 2026-11-05 ablation under `results/ground_grid_20261105/` covers both bundled
@@ -593,6 +782,9 @@ task failure isolation, live and interrupted batch records, linear serialization
 and rendering without overwriting concurrent batch progress. SMPL-X tests cover independent
 joint regression and homogeneous FK, coordinate conventions, shape-dependent reference
 poses, parameter validation, model reuse, mixed-format batches, and all eight robots.
+Recovery tests additionally check source-aware detection, conditional retries,
+window boundary preservation, residual Jacobians, pose-regression rejection,
+terrain clearance, and diagnostics recomputed from the repaired history.
 Run checks appropriate to the change.
 For documentation changes, verify links,
 arguments, and executable examples.

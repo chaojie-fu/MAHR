@@ -1,12 +1,14 @@
 """Independent pose initialization followed by pose-guided graph refinement."""
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from time import perf_counter
 
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, OptimizeResult
 
 from .objective import FrameObjective, REFERENCE_FRAME_DT
 from .pose import PoseObjective
+from .quality import RecoverySettings, MotionQuality
+from .recovery import Recovery
 
 
 @dataclass(frozen=True)
@@ -25,13 +27,16 @@ class Settings:
     ground_scale_ratio: float = .05
     root_correction_bound_ratio: float = .2
     root_position_weight: float = .1
+    recovery: RecoverySettings = field(default_factory=RecoverySettings)
 
     def __post_init__(self):
-        values = list(asdict(self).values())
+        values = [v for k, v in asdict(self).items() if k != 'recovery']
         if not np.isfinite(values).all() or min(values) < 0 or self.maxiter < 1:
             raise ValueError('Invalid solver settings')
         if min(self.ground_scale_ratio, self.root_correction_bound_ratio) <= 0:
             raise ValueError('Ground scale and correction bound must be positive finite values')
+        if not isinstance(self.recovery, RecoverySettings):
+            raise ValueError('Expected RecoverySettings')
 
 
 class Retargeter:
@@ -99,7 +104,48 @@ class Retargeter:
         n = self.robot.dofs + 1
         pose_bounds = list(zip(self.robot.lower, self.robot.upper))
         bounds = list(zip(lower, upper))
-        for frame, (target, rotation) in enumerate(zip(source_vectors, root_rotations)):
+        correction_limit = self.body_height*self.settings.root_correction_bound_ratio
+        full_lower = np.r_[lower, -correction_limit, -correction_limit]
+        full_upper = np.r_[upper, correction_limit, correction_limit]
+        quality = MotionQuality(self.robot, self.pose, pose_targets, root_rotations, frame_dt,
+                                self.body_height, self.settings.recovery)
+        recovery = Recovery(quality, full_lower, full_upper, neutral, self.settings.recovery)
+        errors = []
+
+        def make_objective(frame, previous=None, older=None):
+            return FrameObjective(self.robot, self.edges, self.scale, source_vectors[frame], root_rotations[frame], self.settings,
+                                  posture_reference=self.posture_reference, body_height=self.body_height,
+                                  pose=self.pose, pose_target=pose_targets[frame], ground_targets=ground_targets[frame],
+                                  root_xy=root_xy[frame], previous=previous, older=older, frame_dt=frame_dt, terrain=self.terrain)
+
+        def feasible(frame, state):
+            if not np.isfinite(state).all():
+                return False
+            if np.any(state < full_lower[:len(state)]-1e-7) or np.any(state > full_upper[:len(state)]+1e-7):
+                return False
+            return not varying or np.min(self._clearance(state, root_xy[frame])) >= -1e-7
+
+        def fit(frame, objective, seed):
+            if varying:
+                seed = np.clip(seed, full_lower, full_upper)
+                ground = self.terrain.sample(root_xy[frame]+seed[-2:])
+                seed[n-1] = np.clip(seed[n-1], ground, ground+4.)
+                constraints = dict(type='ineq', fun=lambda state: self._clearance(state, root_xy[frame]),
+                                   jac=lambda state: self._clearance(state, root_xy[frame], jacobian=True))
+                result = minimize(objective.value_gradient, seed, jac=True,
+                                  bounds=list(zip(full_lower, full_upper)), method='SLSQP', constraints=constraints,
+                                  options=dict(maxiter=self.settings.maxiter, ftol=self.settings.ftol))
+            else:
+                seed = np.clip(seed[:n], lower, upper)
+                result = minimize(objective.value_gradient, seed, jac=True, bounds=bounds, method='L-BFGS-B',
+                                  options=dict(maxiter=self.settings.maxiter, maxls=40,
+                                               ftol=self.settings.ftol, gtol=self.settings.gtol))
+            if not np.isfinite(result.fun) or not np.isfinite(result.x).all():
+                return OptimizeResult(x=seed, fun=objective.value(seed), success=False, nit=result.nit,
+                                      message='Non-finite optimizer result; retry from a feasible seed')
+            return result
+
+        for frame in range(count):
             pose_start = perf_counter()
             pose_objective = PoseObjective(self.robot, self.pose, pose_targets[frame], self.posture_reference)
             def fit_pose(seed):
@@ -116,34 +162,24 @@ class Retargeter:
                 raise RuntimeError(f'Non-finite pose initialization at frame {frame}')
             pose_previous = pose_result.x.copy()
             pose_elapsed = perf_counter() - pose_start
-            objective = FrameObjective(self.robot, self.edges, self.scale, target, rotation, self.settings,
-                                       posture_reference=self.posture_reference, body_height=self.body_height,
-                                       pose=self.pose, pose_target=pose_targets[frame],
-                                       ground_targets=ground_targets[frame], root_xy=root_xy[frame],
-                                       previous=x.copy() if frame else None,
-                                       older=states[-2] if frame > 1 else None, frame_dt=frame_dt,
-                                       terrain=self.terrain)
+            objective = make_objective(frame, previous=x.copy() if frame else None,
+                                       older=states[-2] if frame > 1 else None)
             start = perf_counter()
             # Preserve the independently fitted pose; continuity is a soft objective.
             seed = np.r_[pose_result.x, x[n-1]]
-            if varying:
-                # Terrain clearance depends on optimized XY, so it is not a box bound.
-                full_bounds = bounds + list(zip(objective.root.lower, objective.root.upper))
-                constraints = dict(type='ineq', fun=lambda state: self._clearance(state, root_xy[frame]),
-                                   jac=lambda state: self._clearance(state, root_xy[frame], jacobian=True))
-                result = minimize(objective.value_gradient, np.r_[seed, x[n:]], jac=True,
-                                  bounds=full_bounds, method='SLSQP', constraints=constraints,
-                                  options=dict(maxiter=self.settings.maxiter, ftol=self.settings.ftol))
-                if np.min(self._clearance(result.x, root_xy[frame])) < -1e-7:
-                    raise RuntimeError(f'Unable to satisfy terrain clearance at frame {frame}')
-            else:
-                result = minimize(objective.value_gradient, seed, jac=True, bounds=bounds, method='L-BFGS-B',
-                                  options=dict(maxiter=self.settings.maxiter, maxls=40,
-                                               ftol=self.settings.ftol, gtol=self.settings.gtol))
+            result = fit(frame, objective, np.r_[seed, x[n:]] if varying else seed)
+            repair_info = dict(initial_reasons=[], restart_attempts=0, restart_accepted=False, recovery_seconds=0.)
+            if self.settings.recovery.enabled:
+                result, frame_error, repair_info = recovery.restart(frame, result, objective, states, errors,
+                    lambda seed: fit(frame, objective, seed), lambda state: feasible(frame, state))
             elapsed = perf_counter() - start
             if not np.isfinite(result.fun) or not np.isfinite(result.x).all():
                 raise RuntimeError(f'Non-finite optimizer result at frame {frame}')
-            losses = objective.losses(result.x)
+            losses = (objective.last_losses if self.settings.recovery.enabled and repair_info['restart_attempts'] == 0
+                      else objective.losses(result.x))
+            if not feasible(frame, result.x):
+                raise RuntimeError(f'Unable to produce a feasible state at frame {frame}')
+            errors.append(frame_error if self.settings.recovery.enabled else quality.errors(objective.positions, frame))
             x = np.r_[result.x[:n], objective.correction]
             states.append(x.copy())
             stats.append(dict(frame=frame, seconds=elapsed, loss=losses.total,
@@ -156,6 +192,32 @@ class Retargeter:
                               pose_iterations=int(pose_result.nit), pose_message=str(pose_result.message),
                               evaluations=objective.calls, iterations=int(result.nit),
                               success=bool(result.success and pose_result.success),
-                              message=str(result.message) if pose_result.success else f'Pose initialization: {pose_result.message}'))
+                              message=str(result.message) if pose_result.success else f'Pose initialization: {pose_result.message}',
+                              window_repaired=False, **repair_info))
         states = np.asarray(states)
+        errors = np.asarray(errors)
+        if self.settings.recovery.enabled:
+            states, errors = recovery.windows(states, errors, stats, make_objective, self.settings)
+        checks = quality.scan(states, errors, [s['success'] for s in stats])
+        windows_changed = any(s['window_repaired'] for s in stats)
+        for i, check in enumerate(checks):
+            if windows_changed:
+                obj = make_objective(i, states[i-1] if i else None, states[i-2] if i > 1 else None)
+                losses = obj.losses(states[i])
+                stats[i].update(loss=losses.total, graph_loss=losses.graph, regularization_loss=losses.regularization,
+                                temporal_loss=losses.temporal, posture_loss=losses.posture, ground_xy_loss=losses.ground_xy,
+                                root_xy_loss=losses.root_xy, source_pose_loss=losses.source_pose)
+            stats[i]['quality'] = check
+            stats[i]['recovery_status'] = ('disabled' if not self.settings.recovery.enabled else
+                'unresolved' if check['reasons'] else 'window_repaired' if stats[i]['window_repaired'] else
+                'restarted' if stats[i]['restart_accepted'] else 'clean')
+        self.recovery_report = dict(enabled=self.settings.recovery.enabled,
+            initial_suspect_frames=sum(bool(s['initial_reasons']) for s in stats),
+            restart_attempts=sum(s['restart_attempts'] for s in stats),
+            restarted_frames=sum(s['restart_accepted'] for s in stats),
+            window_repaired_frames=sum(s['window_repaired'] for s in stats),
+            unresolved_frames=sum(bool(c['reasons']) for c in checks),
+            seconds=sum(s['recovery_seconds'] for s in stats), windows=recovery.events,
+            window_budget_exhausted=bool(len(recovery.events) >= self.settings.recovery.max_window_solves and
+                                         any(c['reasons'] for c in checks)))
         return states[:, :n], states[:, n:], stats

@@ -118,11 +118,12 @@ def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetRes
     settings = settings or Settings()
     motion = data.motion
     root_xy = motion.positions[:, 0, :2] * data.horizontal_ratio
-    coordinates, corrections, stats = Retargeter(
+    solver = Retargeter(
         data.robot, data.edges, data.scales, settings, posture_reference=data.posture_reference,
         pose=data.pose,
         terrain=data.terrain, body_height=data.normalization['target_height']
-    ).solve(data.source_vectors, motion.root_rotations, data.initial, frame_dt=1 / motion.fps,
+    )
+    coordinates, corrections, stats = solver.solve(data.source_vectors, motion.root_rotations, data.initial, frame_dt=1 / motion.fps,
             root_xy=root_xy, ground_targets=data.ground_targets, pose_targets=data.pose_targets)
     solve_seconds = perf_counter() - start
     trajectory = Trajectory.from_solution(data.robot.names, coordinates, motion, root_xy + corrections)
@@ -145,7 +146,7 @@ def solve(data: PreparedMotion, settings: Settings | None = None) -> RetargetRes
         unsuccessful_pose_frames=sum(not s['pose_success'] for s in stats),
         max_root_xy_correction=float(np.max(np.abs(corrections))),
         mean_loss=float(np.mean([s['loss'] for s in stats])),
-        unsuccessful_frames=sum(not s['success'] for s in stats), frames_detail=stats)
+        unsuccessful_frames=sum(not s['success'] for s in stats), recovery=solver.recovery_report, frames_detail=stats)
     if data.terrain is not None:
         report['terrain'] = data.terrain.describe()
     return RetargetResult(data, trajectory, report)

@@ -3,12 +3,13 @@ from .config import RobotConfig
 from .kinematics import Robot
 from .graph import EdgeSpace
 from .solver import Retargeter, Settings
+from .quality import RecoverySettings
 from .pipeline import PreparedMotion, RetargetResult, prepare, solve, run
 from .trajectory import Trajectory, save_result
 from .terrain import HeightMap
 from .batch import run_batch
 from .smplx import SMPLXSource
 
-__all__ = ["RobotConfig", "Robot", "EdgeSpace", "Retargeter", "Settings",
+__all__ = ["RobotConfig", "Robot", "EdgeSpace", "Retargeter", "Settings", "RecoverySettings",
            "PreparedMotion", "RetargetResult", "Trajectory", "HeightMap", "prepare", "solve", "run", "save_result",
            "run_batch", "SMPLXSource"]

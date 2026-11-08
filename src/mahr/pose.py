@@ -49,6 +49,16 @@ class PoseDirections:
         gradient = 2*np.einsum('ej,ejd->d', tangent, dv)/len(self.a)
         return value, gradient
 
+    def linearize(self, positions, target, jacobian):
+        """Residual and Jacobian for trajectory-level Gauss-Newton steps."""
+        vectors = positions[self.b]-positions[self.a]
+        lengths = np.sqrt(np.sum(vectors*vectors, axis=1)+self.epsilon**2)
+        directions = vectors/lengths[:, None]
+        dv = jacobian[self.b]-jacobian[self.a]
+        derivative = (dv-directions[:, :, None]*np.einsum('ei,eij->ej', directions, dv)[:, None])/lengths[:, None, None]
+        scale = np.sqrt(len(self.a))
+        return (directions-target).ravel()/scale, derivative.reshape(-1, jacobian.shape[-1])/scale
+
 
 class PoseObjective:
     """First-stage direction fit with a weak standing-pose tie breaker."""

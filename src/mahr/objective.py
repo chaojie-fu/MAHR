@@ -102,6 +102,7 @@ class FrameObjective:
             positions, jac = self.robot.evaluate(base[:-1])
         else:
             positions = self.robot.evaluate(base[:-1], jacobian=False)
+        self.positions = positions
         source_pose, pose_gradient = self.pose.loss_gradient(
             positions, self.pose_target, jac if jacobian else None)
         source_pose *= self.settings.source_pose_weight
@@ -132,6 +133,7 @@ class FrameObjective:
         ground_xy = float(np.sum(weighted_xy * error_xy))
         root_xy, root_gradient = self.root.value_gradient(correction)
         losses = LossBreakdown(float(graph), float(regularization), float(temporal), float(posture), ground_xy, root_xy, source_pose)
+        self.last_losses = losses
         gradient = None
         if jacobian:
             dv = self.edges.derivatives(jac, self.rotation, ground_slopes=slopes, out=self._edge_jacobian)
@@ -151,7 +153,58 @@ class FrameObjective:
                     gradient[self.n:] += 2 * np.sum(
                         (weighted_error[indices, 2] / self.scale[indices])[:, None] * slopes, axis=0)
                     gradient[self.n:] -= regularization_gradient[-1] * root_slopes
+            self._linearization = (jac, dv, error.copy(), error_xy, slopes, ground_height, root_slopes)
         return losses, gradient
+
+    def linearize(self, x):
+        """Exact residual Jacobian for a full state, including terrain and history.
+
+        Reuse the objective's FK, edge errors and derivatives; the normal per-frame
+        solve does not assemble these larger least-squares matrices.
+        """
+        if len(x) != self.n+2:
+            raise ValueError('Linearization requires joints, world Z and correction XY')
+        losses, gradient = self._evaluate(x, jacobian=True)
+        jac, dv, error, error_xy, slopes, ground, root_slopes = self._linearization
+        size, joints = len(x), self.n-1
+        sw = np.sqrt(self.weights)
+        graph_j = np.zeros((len(error), 3, size))
+        graph_j[:, :, :self.n] = dv
+        if self.variable_terrain:
+            g = self.edges.ground_indices
+            graph_j[g, 2, self.n:] = slopes/self.scale[g, None]
+        graph_j *= sw[:, None, None]
+        residuals = [(error*sw[:, None]).ravel()]
+        matrices = [graph_j.reshape(-1, size)]
+        pose_r, pose_j = self.pose.linearize(self.positions, self.pose_target, jac)
+        pj = np.zeros((len(pose_r), size)); pj[:, :joints] = pose_j
+        residuals.append(pose_r*np.sqrt(self.settings.source_pose_weight))
+        matrices.append(pj*np.sqrt(self.settings.source_pose_weight))
+        ids = self.edges.ground_sources
+        wg = np.sqrt(self.ground_weights)/self.ground_scale
+        xy_j = np.zeros((len(ids), 2, size))
+        xy_j[:, :, :joints] = np.einsum('ab,kbc->kac', self.rotation[:2], jac[ids])
+        xy_j[:, :, self.n:] = np.eye(2)
+        residuals.append((error_xy*wg[:, None]).ravel())
+        matrices.append((xy_j*wg[:, None, None]).reshape(-1, size))
+        base = x[:self.n].copy(); base[-1] -= ground
+        active = abs(base) < CLIPPED_POSE_LIMIT
+        reg_j = np.zeros((self.n, size)); reg_j[:, :self.n] = np.eye(self.n)
+        reg_j[-1, self.n:] = -root_slopes
+        residuals.append(np.clip(base, -CLIPPED_POSE_LIMIT, CLIPPED_POSE_LIMIT)*np.sqrt(self.settings.regularization))
+        matrices.append(reg_j*active[:, None]*np.sqrt(self.settings.regularization))
+        post_j = np.zeros((joints, size)); post_j[:, :joints] = np.eye(joints)
+        residuals.append((x[:joints]-self.posture_reference)*np.sqrt(self.settings.posture_weight))
+        matrices.append(post_j*np.sqrt(self.settings.posture_weight))
+        root_j = np.zeros((2, size)); root_j[:, self.n:] = np.eye(2)
+        residuals.append(x[self.n:]*np.sqrt(self.root.weight))
+        matrices.append(root_j*np.sqrt(self.root.weight))
+        for delta, weight in ((None if self.previous is None else x[:self.n]-self.previous, self.temporal_weight),
+                              (None if self.older is None else x[:self.n]-2*self.previous+self.older, self.acceleration_weight)):
+            if delta is not None:
+                temporal_j = np.zeros((self.n, size)); temporal_j[:, :self.n] = np.eye(self.n)
+                residuals.append(delta*np.sqrt(weight)); matrices.append(temporal_j*np.sqrt(weight))
+        return np.concatenate(residuals), np.concatenate(matrices)
 
     def losses(self, x):
         """Evaluate diagnostics at the accepted state, including after line-search failure."""

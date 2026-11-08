@@ -18,11 +18,14 @@ and compare their results in a single video.
 By default, MAHR scales horizontal motion by reference body height and refines the
 root path using fixed ground-grid relationships to reduce foot sliding. Source body
 pose matching helps preserve the motion through graph refinement. The same workflow
-applies to all eight robots, without additional configuration.
+applies to all eight robots, without additional configuration. Automatic quality
+checks flag suspicious motion and attempt local repairs; statistics identify any
+frames that still need inspection.
 
 The output consists of kinematic trajectories for motion analysis, data preparation,
-and downstream control research. Temporal regularization encourages continuity;
-joint and root speeds are not hard-limited. Ground penetration may occur, and dynamic balance,
+and downstream control research. Temporal regularization and conditional repairs
+improve continuity, but do not guarantee a smooth or executable trajectory.
+Ground penetration may occur, and dynamic balance,
 self-collision, and contact forces are not validated by this pipeline.
 
 ## How to use
@@ -43,7 +46,7 @@ dependency versions:
 ```bash
 uv venv --python 3.10 .venv
 source .venv/bin/activate
-uv pip install -e . "numpy==2.2.6" "scipy==1.15.3" "mujoco==3.9.0"
+uv pip install -e . "numpy==2.2.6" "scipy==1.15.3" "mujoco==3.9.0" "osqp==1.1.1"
 ```
 
 Keep this environment active for all commands below. In a new shell, run
@@ -386,6 +389,14 @@ python scripts/retarget_all.py \
 Together, these runs produce 6552 frames of robot motion. The script checks output
 values, joint limits, and solver status. Successful runs report `failed 0` for each
 robot and write a `summary.json` file in each output directory.
+
+Solver convergence and motion quality are reported separately. In each trajectory's
+`.stats.json`, check `recovery.unresolved_frames` even when `failed 0` is reported.
+The `quality` and `recovery_status` entries in `frames_detail` locate remaining
+suspect frames; divide the zero-based frame index by the trajectory's `fps` to find
+their playback times. `recovery.windows` records accepted and rejected repairs,
+and `recovery.window_budget_exhausted` indicates that the repair budget was reached.
+Unresolved frames remain in the output for inspection.
 
 Render the individual videos and combine them into comparison videos and GIFs:
 
