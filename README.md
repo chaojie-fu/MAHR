@@ -11,6 +11,12 @@ pipeline for humanoid motion retargeting. ASF/AMC and BVH formats are supported.
 We provide a few retargeting examples from CMU and AMASS dataset to several robots and 
 convenient extension for adding new robots.
 
+**Updated: November 17, 2026.** To improve retargeting speed and make the pipeline
+easier to maintain, we have used vibe coding to develop a refactored version of MAHR.
+This version is available on the [optimized branch](https://github.com/chaojie-fu/MAHR/tree/optimized),
+with its own [README](https://github.com/chaojie-fu/MAHR/blob/optimized/README.md)
+covering installation, supported inputs and robots, and runnable examples.
+
 ## How to use
 
 ### Installation
