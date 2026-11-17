@@ -9,9 +9,15 @@ working conventions here.
 ## Documentation and Naming
 
 - Write all project documentation in English, including new documents and updates to existing ones.
-- Organize README with an overview under `About this project`, followed
-  by `How to use`, installation, data preparation, robot models, retargeting, visualization,
-  and acknowledgements. Keep explanations practical and commands reproducible.
+- Keep README a concise project homepage: `About this project`, `How to use`
+  with uv installation and a complete bundled-motion example, supported robots and
+  inputs, documentation links, citation, acknowledgements, and license.
+  Readers must be able to try a bundled motion without downloading external data.
+- Keep detailed user workflows in `docs/smplx.md` (model/data acquisition and format),
+  `docs/usage.md` (terrain, batches, robot paths, and Python API), and
+  `docs/reproduction.md` (rendering, full reproduction, and result diagnostics).
+  Link them with relative Markdown paths and run their commands from the repository
+  root. Keep algorithms, tuning decisions, and maintenance guidance in AGENTS.md.
 - Do not add a `Development` section to README. Keep developer guidance and agent
   maintenance instructions in AGENTS.md.
 - Use `MAHR` for the project display name and distribution metadata. Keep the Python module
